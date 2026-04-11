@@ -1,10 +1,11 @@
-import { supabase } from './supabase';
+import { useAuthStore } from '../store/auth';
 
 const API_URL = import.meta.env['VITE_API_URL'] as string ?? 'http://localhost:3001';
 
-async function getHeaders(): Promise<HeadersInit> {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+// Read token from the Zustand store — avoids the Supabase auth lock entirely.
+// AuthProvider keeps the store in sync via onAuthStateChange, so this is always current.
+function getHeaders(): HeadersInit {
+  const token = useAuthStore.getState().session?.access_token;
   return {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -12,7 +13,7 @@ async function getHeaders(): Promise<HeadersInit> {
 }
 
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers = await getHeaders();
+  const headers = getHeaders();
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as { error?: string };

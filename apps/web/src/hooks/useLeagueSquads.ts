@@ -102,6 +102,43 @@ export function useSetCaptain(leagueId: string | undefined) {
   });
 }
 
+// ── Per-match breakdown ───────────────────────────────────────────────────────
+
+export interface BreakdownPlayer {
+  playerId: string;
+  playerName: string;
+  role: string;
+  teamCode: string | null;
+  basePoints: number;
+  multiplier: number;
+  fantasyPoints: number;
+  isCaptain: boolean;
+  isViceCaptain: boolean;
+}
+
+export interface MatchBreakdown {
+  matchNumber: number;
+  captainPlayerId: string | null;
+  vcPlayerId: string | null;
+  players: BreakdownPlayer[];
+  matchTotal: number;
+}
+
+export interface MemberBreakdownResponse {
+  member: { id: string; teamName: string; username: string; displayName: string | null };
+  matches: MatchBreakdown[];
+  grandTotal: number;
+}
+
+export function useLeagueMemberBreakdown(leagueId: string, memberId: string | null) {
+  return useQuery<MemberBreakdownResponse>({
+    queryKey: ['league-breakdown', leagueId, memberId],
+    queryFn: () => apiFetch(`/api/leagues/${leagueId}/members/${memberId}/breakdown`),
+    enabled: !!memberId,
+    staleTime: 60_000,
+  });
+}
+
 export function useLeagueMembers(leagueId: string | undefined) {
   return useQuery<LeagueMember[]>({
     queryKey: ['league-members', leagueId],

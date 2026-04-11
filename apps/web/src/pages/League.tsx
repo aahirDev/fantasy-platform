@@ -3,9 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import { useAuthStore } from '../store/auth';
-import { useLeagueSquads, useStartAuction, useSyncMatches, useSetCaptain } from '../hooks/useLeagueSquads';
+import { useLeagueSquads, useStartAuction, useSyncMatches, useSetCaptain, useLeagueMemberBreakdown } from '../hooks/useLeagueSquads';
 import type { League } from '../hooks/useLeagues';
-import type { LeagueMember, SquadPlayer, SyncResult } from '../hooks/useLeagueSquads';
+import type { LeagueMember, SquadPlayer, SyncResult, MemberBreakdownResponse, MatchBreakdown } from '../hooks/useLeagueSquads';
 
 // ── Role badge ────────────────────────────────────────────────────────────────
 
@@ -158,7 +158,9 @@ type HubTab = 'standings' | 'squads' | 'players';
 
 // ── Standings tab ─────────────────────────────────────────────────────────────
 
-function StandingsTab({ members, matchesPlayed }: { members: LeagueMember[]; matchesPlayed: number }) {
+function StandingsTab({ members, matchesPlayed, leagueId }: { members: LeagueMember[]; matchesPlayed: number; leagueId: string }) {
+  const [breakdownMemberId, setBreakdownMemberId] = useState<string | null>(null);
+
   return (
     <div className="space-y-3">
       {matchesPlayed === 0 && (
@@ -170,8 +172,12 @@ function StandingsTab({ members, matchesPlayed }: { members: LeagueMember[]; mat
         const rank = idx + 1;
         const rankColor = rank === 1 ? 'text-amber-400' : rank === 2 ? 'text-slate-300' : rank === 3 ? 'text-orange-400' : 'text-white/40';
         return (
-          <div key={m.id} className="flex items-center gap-4 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
-            <span className={`text-xl font-black w-6 text-center ${rankColor}`}>{rank}</span>
+          <button
+            key={m.id}
+            className="w-full flex items-center gap-4 bg-white/5 border border-white/10 rounded-xl px-4 py-3 hover:bg-white/8 transition-colors text-left"
+            onClick={() => setBreakdownMemberId(m.id)}
+          >
+            <span className={`text-xl font-black w-6 text-center flex-shrink-0 ${rankColor}`}>{rank}</span>
             <Avatar name={m.teamName} size={36} />
             <div className="flex-1 min-w-0">
               <p className="text-white font-semibold text-sm truncate">{m.teamName}</p>
@@ -181,9 +187,19 @@ function StandingsTab({ members, matchesPlayed }: { members: LeagueMember[]; mat
               <p className="text-white font-black text-xl tabular-nums">{m.totalPoints.toLocaleString()}</p>
               <p className="text-white/30 text-xs">pts</p>
             </div>
-          </div>
+            <svg className="w-4 h-4 text-white/20 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
         );
       })}
+      {breakdownMemberId && (
+        <TeamBreakdownModal
+          leagueId={leagueId}
+          memberId={breakdownMemberId}
+          onClose={() => setBreakdownMemberId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -280,6 +296,127 @@ function CaptainModal({
   );
 }
 
+// ── Team breakdown modal ──────────────────────────────────────────────────────
+
+function MatchRow({ match }: { match: MatchBreakdown }) {
+  const [open, setOpen] = useState(false);
+  const hasPts = match.matchTotal > 0;
+
+  return (
+    <div className="border border-white/8 rounded-xl overflow-hidden">
+      <button
+        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="text-white/40 text-xs font-mono w-14 flex-shrink-0">M{match.matchNumber}</span>
+        <span className="flex-1 text-white/60 text-xs">
+          {match.players.length} players active
+          {match.captainPlayerId && (
+            <span className="ml-2 text-amber-400/70">
+              C: {match.players.find(p => p.isCaptain)?.playerName?.split(' ').pop()}
+            </span>
+          )}
+        </span>
+        <span className={`text-sm font-black tabular-nums ${hasPts ? 'text-green-400' : 'text-white/20'}`}>
+          {hasPts ? `+${match.matchTotal}` : '—'}
+        </span>
+        <svg className={`w-3.5 h-3.5 text-white/30 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="border-t border-white/8 bg-white/[0.015]">
+          {match.players.map(p => (
+            <div key={p.playerId} className="flex items-center gap-2 px-4 py-2 border-b border-white/5 last:border-0">
+              {/* C / VC badge */}
+              {p.isCaptain ? (
+                <span className="w-5 h-5 rounded-full bg-amber-400 flex items-center justify-center text-[9px] font-black text-black flex-shrink-0">C</span>
+              ) : p.isViceCaptain ? (
+                <span className="w-5 h-5 rounded-full bg-slate-300 flex items-center justify-center text-[9px] font-black text-black flex-shrink-0">VC</span>
+              ) : (
+                <span className="w-5 flex-shrink-0" />
+              )}
+              <RoleBadge role={p.role} />
+              <span className="flex-1 text-white/80 text-xs font-medium truncate">{p.playerName}</span>
+              {p.teamCode && <span className="text-white/25 text-[10px] font-mono">{p.teamCode}</span>}
+              {p.basePoints > 0 && p.multiplier > 1 ? (
+                <span className={`text-xs tabular-nums font-bold ${p.isCaptain ? 'text-amber-400' : 'text-slate-300'}`}>
+                  {p.basePoints}×{p.multiplier}=<span className="font-black">{p.fantasyPoints}</span>
+                </span>
+              ) : (
+                <span className={`text-xs tabular-nums font-semibold ${p.fantasyPoints > 0 ? 'text-green-400' : 'text-white/20'}`}>
+                  {p.fantasyPoints > 0 ? `+${p.fantasyPoints}` : '—'}
+                </span>
+              )}
+            </div>
+          ))}
+          {match.players.length === 0 && (
+            <p className="px-4 py-3 text-white/20 text-xs">No active players this match</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeamBreakdownModal({
+  leagueId,
+  memberId,
+  onClose,
+}: {
+  leagueId: string;
+  memberId: string;
+  onClose: () => void;
+}) {
+  const { data, isLoading } = useLeagueMemberBreakdown(leagueId, memberId);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full sm:max-w-lg bg-[#0f0f16] border border-white/10 rounded-t-3xl sm:rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 flex-shrink-0">
+          <div>
+            <h2 className="text-white font-bold text-base">{data?.member.teamName ?? 'Loading…'}</h2>
+            {data && (
+              <p className="text-white/40 text-xs mt-0.5">
+                {data.matches.length} matches · <span className="text-green-400 font-bold">{data.grandTotal.toLocaleString()} pts total</span>
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-white/40 hover:text-white p-1">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 p-4 space-y-2">
+          {isLoading && (
+            <div className="text-center py-12 text-white/30 text-sm">Loading breakdown…</div>
+          )}
+          {data && data.matches.length === 0 && (
+            <div className="text-center py-12 text-white/30 text-sm">No match scores yet</div>
+          )}
+          {data?.matches.map(match => (
+            <MatchRow key={match.matchNumber} match={match} />
+          ))}
+        </div>
+
+        {/* Footer summary */}
+        {data && data.matches.length > 0 && (
+          <div className="border-t border-white/10 px-5 py-3 flex-shrink-0 flex items-center justify-between bg-white/[0.02]">
+            <span className="text-white/40 text-xs">{data.matches.length} matches played</span>
+            <span className="text-green-400 font-black text-lg tabular-nums">{data.grandTotal.toLocaleString()} <span className="text-white/30 text-xs font-normal">pts</span></span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Squad card ────────────────────────────────────────────────────────────────
 
 function SquadCard({
@@ -295,6 +432,7 @@ function SquadCard({
 }) {
   const [expanded, setExpanded]       = useState(false);
   const [showCaptainModal, setShowCaptainModal] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const { mutate: setCaptain, isPending: saving } = useSetCaptain(leagueId);
 
   const spentPct = leagueBudget > 0 ? (member.totalSpent / leagueBudget) * 100 : 0;
@@ -323,7 +461,6 @@ function SquadCard({
           <div className="text-right flex-shrink-0">
             <p className="text-white font-black text-lg tabular-nums">{member.totalPoints.toLocaleString()}</p>
             <p className="text-white/30 text-[10px]">pts</p>
-            <p className="text-white/40 text-xs mt-0.5">{member.budgetRemainingLakhs} left</p>
           </div>
           <svg className={`w-4 h-4 text-white/30 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -332,6 +469,17 @@ function SquadCard({
 
         {expanded && (
           <div className="border-t border-white/10 p-4 space-y-4">
+            {/* Match breakdown button */}
+            <button
+              onClick={() => setShowBreakdown(true)}
+              className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border border-indigo-500/30 bg-indigo-500/5 text-indigo-300 hover:bg-indigo-500/10 transition-colors"
+            >
+              <span className="text-sm font-semibold">📊 Match-by-match breakdown</span>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+
             {/* Captain assignment CTA for own squad */}
             {isOwnSquad && (
               <button
@@ -403,6 +551,13 @@ function SquadCard({
               onSuccess: () => setShowCaptainModal(false),
             });
           }}
+        />
+      )}
+      {showBreakdown && (
+        <TeamBreakdownModal
+          leagueId={leagueId}
+          memberId={member.id}
+          onClose={() => setShowBreakdown(false)}
         />
       )}
     </>
@@ -627,7 +782,7 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
           <div className="text-center text-white/30 py-16">Loading…</div>
         ) : (
           <>
-            {tab === 'standings' && <StandingsTab members={members} matchesPlayed={matchesPlayed} />}
+            {tab === 'standings' && <StandingsTab members={members} matchesPlayed={matchesPlayed} leagueId={league.id} />}
             {tab === 'squads' && <SquadsTab members={members} leagueBudget={league.totalBudgetLakhs} internalUserId={internalUserId} leagueId={league.id} />}
             {tab === 'players' && <PlayersTab members={members} />}
           </>

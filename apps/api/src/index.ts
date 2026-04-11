@@ -13,7 +13,7 @@ import { authMiddleware } from './middleware/auth.js';
 import { setupSocketIO } from './socket.js';
 
 const PORT = process.env['PORT'] ?? 3001;
-const CLIENT_ORIGIN = process.env['CLIENT_ORIGIN'] ?? 'http://localhost:5173';
+const CLIENT_ORIGIN = process.env['CLIENT_ORIGIN'] ?? 'http://localhost:5174';
 
 const app = express();
 const httpServer = createServer(app);
@@ -23,7 +23,8 @@ setupSocketIO(httpServer, CLIENT_ORIGIN);
 
 // ── Middleware ─────────────────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({ origin: CLIENT_ORIGIN }));
+const ALLOWED_ORIGINS = [CLIENT_ORIGIN, 'http://localhost:5173', 'http://localhost:5174'];
+app.use(cors({ origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin)) }));
 app.use(express.json());
 
 // ── Routes ─────────────────────────────────────────────────────────────────

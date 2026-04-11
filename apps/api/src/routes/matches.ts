@@ -150,7 +150,7 @@ matchesRouter.post('/sync', async (req: AuthenticatedRequest, res) => {
       res.status(404).json({ error: 'League not found' });
       return;
     }
-    if (league.commissionerId !== req.userId) {
+    if (league.commissionerId !== req.internalUserId) {
       res.status(403).json({ error: 'Only the commissioner can sync matches' });
       return;
     }
@@ -327,7 +327,7 @@ matchesRouter.put('/:matchNumber/override', async (req: AuthenticatedRequest, re
       res.status(404).json({ error: 'League not found' });
       return;
     }
-    if (league.commissionerId !== req.userId) {
+    if (league.commissionerId !== req.internalUserId) {
       res.status(403).json({ error: 'Only the commissioner can override points' });
       return;
     }

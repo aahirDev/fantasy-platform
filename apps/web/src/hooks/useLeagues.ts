@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
+import { useAuthStore } from '../store/auth';
 
 export interface League {
   id: string;
@@ -17,9 +18,13 @@ export interface League {
 }
 
 export function useLeagues() {
+  const internalUserId = useAuthStore((s) => s.internalUserId);
   return useQuery<League[]>({
     queryKey: ['leagues'],
     queryFn: () => apiFetch<League[]>('/api/leagues'),
+    // Only fetch after auth/sync has run and linked our internal user ID.
+    // This prevents the race where leagues fires before supabaseUid is written to DB.
+    enabled: !!internalUserId,
   });
 }
 

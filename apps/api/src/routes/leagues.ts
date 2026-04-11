@@ -2,7 +2,7 @@ import { Router, type Router as RouterType } from 'express';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
 import { getDb } from '@fantasy/db';
 import { leagues, leagueMembers, squadPlayers, players, users, captainAssignments, matchScores } from '@fantasy/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { nanoid } from '../lib/nanoid.js';
 import { AuctionStateManager, getAuction } from '../auction/AuctionStateManager.js';
 
@@ -10,8 +10,9 @@ export const leaguesRouter: RouterType = Router();
 
 leaguesRouter.get('/', async (req: AuthenticatedRequest, res) => {
   try {
+    if (!req.internalUserId) { res.json([]); return; }
     const db = getDb();
-    const userId = req.userId!;
+    const userId = req.internalUserId;
     // Leagues where user is commissioner OR a member
     const rows = await db
       .selectDistinct({ league: leagues })
@@ -42,7 +43,7 @@ leaguesRouter.post('/', async (req: AuthenticatedRequest, res) => {
       .values({
         name: String(name),
         sport: sport as 'CRICKET_T20',
-        commissionerId: req.userId!,
+        commissionerId: req.internalUserId!,
         numTeams: Number(numTeams ?? 8),
         totalBudgetLakhs: Number(totalBudgetLakhs ?? 1000),
         squadSize: Number(squadSize ?? 11),
@@ -74,7 +75,7 @@ leaguesRouter.post('/:id/start', async (req: AuthenticatedRequest, res) => {
     const leagueId = String(req.params['id']);
     const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId));
     if (!league) { res.status(404).json({ error: 'League not found' }); return; }
-    if (league.commissionerId !== req.userId) { res.status(403).json({ error: 'Only the commissioner can start the auction' }); return; }
+    if (league.commissionerId !== req.internalUserId) { res.status(403).json({ error: 'Only the commissioner can start the auction' }); return; }
     if (league.status !== 'LOBBY') { res.status(409).json({ error: 'Auction already started' }); return; }
 
     const members = await db.select().from(leagueMembers).where(eq(leagueMembers.leagueId, league.id));
@@ -118,7 +119,7 @@ leaguesRouter.post('/join', async (req: AuthenticatedRequest, res) => {
     const [existing] = await db
       .select()
       .from(leagueMembers)
-      .where(and(eq(leagueMembers.leagueId, league.id), eq(leagueMembers.userId, req.userId!)));
+      .where(and(eq(leagueMembers.leagueId, league.id), eq(leagueMembers.userId, req.internalUserId!)));
     if (existing) { res.status(409).json({ error: 'Already a member of this league' }); return; }
 
     // Check league not full
@@ -131,7 +132,7 @@ leaguesRouter.post('/join', async (req: AuthenticatedRequest, res) => {
       .insert(leagueMembers)
       .values({
         leagueId: league.id,
-        userId: req.userId!,
+        userId: req.internalUserId!,
         teamName: String(teamName),
         budgetRemainingLakhs: league.totalBudgetLakhs,
       })
@@ -200,20 +201,28 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
       .innerJoin(leagueMembers, eq(captainAssignments.memberId, leagueMembers.id))
       .where(eq(leagueMembers.leagueId, leagueId));
 
-    // Aggregate fantasy points per member from match_scores
-    const memberScores = await db
+    // Fetch all raw per-match scores for this league (not aggregated).
+    // This lets us apply transfer windows (fromMatch/toMatch) and per-match captain
+    // multipliers correctly in JS.
+    const rawMatchScores = await db
       .select({
         playerId: matchScores.playerId,
-        totalPoints: sql<number>`coalesce(sum(coalesce(${matchScores.manualOverridePoints}, ${matchScores.fantasyPoints}, 0)), 0)`.as('total_points'),
-        matchCount: sql<number>`count(*)`.as('match_count'),
+        matchNumber: matchScores.matchNumber,
+        fantasyPoints: matchScores.fantasyPoints,
+        manualOverridePoints: matchScores.manualOverridePoints,
       })
       .from(matchScores)
-      .where(eq(matchScores.leagueId, leagueId))
-      .groupBy(matchScores.playerId);
+      .where(eq(matchScores.leagueId, leagueId));
 
-    const pointsByPlayerId = Object.fromEntries(
-      memberScores.map(r => [r.playerId, { totalPoints: Number(r.totalPoints), matchCount: Number(r.matchCount) }])
-    );
+    // playerId → matchNumber → effective points (manual override takes priority)
+    const scoreMap = new Map<string, Map<number, number>>();
+    const uniqueMatchNums = new Set<number>();
+    for (const s of rawMatchScores) {
+      uniqueMatchNums.add(s.matchNumber);
+      if (!scoreMap.has(s.playerId)) scoreMap.set(s.playerId, new Map());
+      scoreMap.get(s.playerId)!.set(s.matchNumber, s.manualOverridePoints ?? s.fantasyPoints ?? 0);
+    }
+    const matchesPlayed = uniqueMatchNums.size;
 
     // Group squads by member
     const squadsByMember = squadRows.reduce<Record<string, typeof squadRows>>((acc, row) => {
@@ -227,22 +236,35 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
     }, {});
 
     const result = members.map(m => {
-      // Resolve current captain / VC for this member (latest fromMatch wins)
+      // Captain history sorted newest-first (for resolving captain per match)
       const memberCaptains = (captainsByMember[m.id] ?? [])
         .slice()
         .sort((a, b) => b.fromMatch - a.fromMatch);
-      const captainPlayerId    = memberCaptains.find(c => c.role === 'CAPTAIN')?.playerId ?? null;
+      // Current captain/VC = the latest assignment
+      const captainPlayerId     = memberCaptains.find(c => c.role === 'CAPTAIN')?.playerId ?? null;
       const viceCaptainPlayerId = memberCaptains.find(c => c.role === 'VICE_CAPTAIN')?.playerId ?? null;
 
       const squad = (squadsByMember[m.id] ?? []).map(p => {
-        const basePoints    = pointsByPlayerId[p.playerId]?.totalPoints ?? 0;
-        const isCaptain     = p.playerId === captainPlayerId;
-        const isViceCaptain = p.playerId === viceCaptainPlayerId;
-        const fantasyPoints = isCaptain
-          ? Math.round(basePoints * 2)
-          : isViceCaptain
-            ? Math.round(basePoints * 1.5)
-            : basePoints;
+        const rc = p.rosterConfig as { fromMatch?: number; toMatch?: number | null } | null;
+        const fromMatch = rc?.fromMatch ?? 1;
+        const toMatch   = rc?.toMatch ?? null;   // null = still in squad
+
+        // Sum points only within this player's active transfer window,
+        // applying the captain multiplier that was in effect for each match.
+        let playerTotal = 0;
+        const playerScores = scoreMap.get(p.playerId) ?? new Map<number, number>();
+        for (const [matchNum, pts] of playerScores) {
+          if (matchNum < fromMatch) continue;
+          if (toMatch !== null && matchNum > toMatch) continue;
+          // Captain in effect for this match
+          const captM = memberCaptains.find(c => c.role === 'CAPTAIN'      && c.fromMatch <= matchNum);
+          const vcM   = memberCaptains.find(c => c.role === 'VICE_CAPTAIN' && c.fromMatch <= matchNum);
+          const mult  = p.playerId === captM?.playerId ? 2.0
+                      : p.playerId === vcM?.playerId   ? 1.5
+                      : 1.0;
+          playerTotal += Math.round(pts * mult);
+        }
+
         return {
           playerId: p.playerId,
           playerName: p.playerName,
@@ -252,9 +274,9 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
           isUncapped: p.isUncapped,
           acquisitionPriceLakhs: p.acquisitionPriceLakhs,
           rosterConfig: p.rosterConfig,
-          fantasyPoints,
-          isCaptain,
-          isViceCaptain,
+          fantasyPoints: playerTotal,
+          isCaptain:    p.playerId === captainPlayerId,
+          isViceCaptain: p.playerId === viceCaptainPlayerId,
         };
       });
 
@@ -284,7 +306,7 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
     res.json({
       league,
       members: result.sort((a, b) => b.totalPoints - a.totalPoints),
-      matchesPlayed: memberScores.length > 0 ? Math.max(...memberScores.map(r => r.matchCount)) : 0,
+      matchesPlayed,
     });
   } catch (err) {
     console.error('[leagues/squads]', err);
@@ -319,7 +341,7 @@ leaguesRouter.post('/:id/captain', async (req: AuthenticatedRequest, res) => {
     const [member] = await db
       .select()
       .from(leagueMembers)
-      .where(and(eq(leagueMembers.leagueId, leagueId), eq(leagueMembers.userId, req.userId!)));
+      .where(and(eq(leagueMembers.leagueId, leagueId), eq(leagueMembers.userId, req.internalUserId!)));
 
     if (!member) {
       res.status(403).json({ error: 'You are not a member of this league' });
@@ -355,6 +377,127 @@ leaguesRouter.post('/:id/captain', async (req: AuthenticatedRequest, res) => {
     res.json({ captainAssignments: inserted });
   } catch (err) {
     console.error('[leagues/captain]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/leagues/:id/members/:memberId/breakdown
+ * Per-match fantasy points breakdown for a member.
+ * Respects transfer windows (fromMatch/toMatch) and captain history.
+ */
+leaguesRouter.get('/:id/members/:memberId/breakdown', async (req, res) => {
+  try {
+    const db = getDb();
+    const leagueId = req.params['id']!;
+    const memberId = req.params['memberId']!;
+
+    const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId));
+    if (!league) { res.status(404).json({ error: 'League not found' }); return; }
+
+    // Get member + user info
+    const [memberRow] = await db
+      .select({
+        id: leagueMembers.id,
+        teamName: leagueMembers.teamName,
+        userId: leagueMembers.userId,
+        username: users.username,
+        displayName: users.displayName,
+      })
+      .from(leagueMembers)
+      .innerJoin(users, eq(leagueMembers.userId, users.id))
+      .where(and(eq(leagueMembers.id, memberId), eq(leagueMembers.leagueId, leagueId)));
+    if (!memberRow) { res.status(404).json({ error: 'Member not found' }); return; }
+
+    // Squad players with roster config
+    const squadRows = await db
+      .select({
+        playerId: players.id,
+        playerName: players.name,
+        role: players.role,
+        teamCode: players.teamCode,
+        rosterConfig: squadPlayers.rosterConfig,
+      })
+      .from(squadPlayers)
+      .innerJoin(players, eq(squadPlayers.playerId, players.id))
+      .where(eq(squadPlayers.memberId, memberId));
+
+    // Captain assignments for this member (sorted newest-first)
+    const captainRows = await db
+      .select({
+        playerId: captainAssignments.playerId,
+        role: captainAssignments.role,
+        fromMatch: captainAssignments.fromMatch,
+      })
+      .from(captainAssignments)
+      .where(eq(captainAssignments.memberId, memberId));
+    captainRows.sort((a, b) => b.fromMatch - a.fromMatch);
+
+    // All match scores for this member's players
+    const playerIds = squadRows.map(p => p.playerId);
+    const allScores = playerIds.length > 0
+      ? await db
+          .select({
+            playerId: matchScores.playerId,
+            matchNumber: matchScores.matchNumber,
+            fantasyPoints: matchScores.fantasyPoints,
+            manualOverridePoints: matchScores.manualOverridePoints,
+          })
+          .from(matchScores)
+          .where(and(eq(matchScores.leagueId, leagueId), inArray(matchScores.playerId, playerIds)))
+      : [];
+
+    // Score map: playerId → matchNum → effective points
+    const scoreMap = new Map<string, Map<number, number>>();
+    for (const s of allScores) {
+      if (!scoreMap.has(s.playerId)) scoreMap.set(s.playerId, new Map());
+      scoreMap.get(s.playerId)!.set(s.matchNumber, s.manualOverridePoints ?? s.fantasyPoints ?? 0);
+    }
+
+    // Roster window per player
+    const rosterMap = new Map<string, { fromMatch: number; toMatch: number | null }>();
+    for (const p of squadRows) {
+      const rc = p.rosterConfig as { fromMatch?: number; toMatch?: number | null } | null;
+      rosterMap.set(p.playerId, { fromMatch: rc?.fromMatch ?? 1, toMatch: rc?.toMatch ?? null });
+    }
+
+    // Active match numbers (only matches with at least one score)
+    const allMatchNums = [...new Set(allScores.map(s => s.matchNumber))].sort((a, b) => a - b);
+
+    // Per-match breakdown
+    const matches = allMatchNums.map(matchNum => {
+      // Resolve captain/VC in effect for this match
+      const captainPlayerId = captainRows.find(c => c.role === 'CAPTAIN'      && c.fromMatch <= matchNum)?.playerId ?? null;
+      const vcPlayerId      = captainRows.find(c => c.role === 'VICE_CAPTAIN' && c.fromMatch <= matchNum)?.playerId ?? null;
+
+      const activePlayers = squadRows
+        .filter(p => {
+          const rc = rosterMap.get(p.playerId)!;
+          return matchNum >= rc.fromMatch && (rc.toMatch === null || matchNum <= rc.toMatch);
+        })
+        .map(p => {
+          const basePoints    = scoreMap.get(p.playerId)?.get(matchNum) ?? 0;
+          const isCaptain     = p.playerId === captainPlayerId;
+          const isViceCaptain = p.playerId === vcPlayerId;
+          const multiplier    = isCaptain ? 2.0 : isViceCaptain ? 1.5 : 1.0;
+          const fantasyPoints = Math.round(basePoints * multiplier);
+          return { playerId: p.playerId, playerName: p.playerName, role: p.role, teamCode: p.teamCode, basePoints, multiplier, fantasyPoints, isCaptain, isViceCaptain };
+        })
+        .sort((a, b) => b.fantasyPoints - a.fantasyPoints);
+
+      const matchTotal = activePlayers.reduce((sum, p) => sum + p.fantasyPoints, 0);
+      return { matchNumber: matchNum, captainPlayerId, vcPlayerId, players: activePlayers, matchTotal };
+    });
+
+    const grandTotal = matches.reduce((sum, m) => sum + m.matchTotal, 0);
+
+    res.json({
+      member: { id: memberRow.id, teamName: memberRow.teamName, username: memberRow.username, displayName: memberRow.displayName },
+      matches,
+      grandTotal,
+    });
+  } catch (err) {
+    console.error('[leagues/breakdown]', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
