@@ -1,7 +1,8 @@
-export type PlayerRole = 'BATSMAN' | 'BOWLER' | 'ALL_ROUNDER' | 'WICKET_KEEPER';
-export type AuctionPhase = 'LOBBY' | 'AUCTION_PHASE1' | 'AUCTION_PHASE2' | 'COMPLETE';
+// Mirrors apps/api/src/auction/types.ts — keep in sync
+
+export type PlayerRole = 'WK' | 'BAT' | 'AR' | 'BOWL';
+export type AuctionPhase = 'PHASE1' | 'PHASE2';
 export type LotStatus = 'ACTIVE' | 'SOLD' | 'UNSOLD';
-export type PauseReason = 'admin' | 'no_bidders' | null;
 
 export interface AuctionPlayer {
   id: string;
@@ -16,9 +17,8 @@ export interface AuctionPlayer {
 
 export interface SquadEntry {
   playerId: string;
-  name: string;
+  playerName: string;
   role: PlayerRole;
-  teamCode: string | null;
   isOverseas: boolean;
   isUncapped: boolean;
   acquisitionPriceLakhs: number;
@@ -35,29 +35,44 @@ export interface AuctionMember {
 }
 
 export interface ActiveBid {
-  bidderId: string | null;
-  bidderName: string | null;
+  memberId: string;
+  userId: string;
+  teamName: string;
   amountLakhs: number;
+  isAllIn: boolean;
+  timestamp: number;
 }
 
 export interface LotState {
   lotId: string;
   player: AuctionPlayer;
   status: LotStatus;
+  bids: ActiveBid[];
   currentBidLakhs: number;
-  activeBid: ActiveBid | null;
+  currentBidderId: string | null;
+  /** Absolute epoch ms when the current timer expires. Null before first bid. */
   timerEndsAt: number | null;
-  bidLog: Array<{ bidderId: string; bidderName: string; amountLakhs: number; ts: number }>;
+  presentedAt: number;
+  matchBidders: string[];
 }
 
 export interface AuctionSnapshot {
   leagueId: string;
   phase: AuctionPhase;
+  isPaused: boolean;
+  pauseReason: string | null;
   currentLot: LotState | null;
   members: AuctionMember[];
-  nominatingMemberId: string | null;
-  pauseReason: PauseReason;
+  playerQueue: AuctionPlayer[];
+  currentQueueIndex: number;
+  phase1Count: number;
+  phase2Pool: AuctionPlayer[];
+  nomination: { order: string[]; currentIndex: number } | null;
+  currentNominatorId: string | null;
+  eligiblePlayerIds: string[];
+  undoAvailable: boolean;
+  totalSold: number;
+  totalUnsold: number;
   remainingPlayerCount: number;
-  soldPlayerCount: number;
-  unsoldPlayerCount: number;
+  allotmentsSinceLastUndo: number;
 }

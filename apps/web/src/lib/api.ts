@@ -21,7 +21,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   return res.json() as Promise<T>;
 }
 
-/** Called after login to upsert the user into our users table */
-export async function syncUser(): Promise<void> {
-  await apiFetch('/api/auth/sync', { method: 'POST' });
+/** Called after login to upsert the user into our users table. Returns the internal user ID. */
+export async function syncUser(): Promise<{ id: string; created: boolean }> {
+  return apiFetch<{ id: string; created: boolean }>('/api/auth/sync', { method: 'POST' });
 }

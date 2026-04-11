@@ -60,7 +60,8 @@ export interface LotState {
   bids: ActiveBid[];
   currentBidLakhs: number;
   currentBidderId: string | null;
-  timerSeconds: number;
+  /** Absolute epoch ms when the timer expires. Null if timer not yet started. */
+  timerEndsAt: number | null;
   presentedAt: number;
   matchBidders: string[];
 }
@@ -97,6 +98,7 @@ export interface AuctionSnapshot {
   undoAvailable: boolean;
   totalSold: number;
   totalUnsold: number;
+  remainingPlayerCount: number;
   allotmentsSinceLastUndo: number;
 }
 

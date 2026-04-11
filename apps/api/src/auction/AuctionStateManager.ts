@@ -178,7 +178,7 @@ export class AuctionStateManager {
       bids: [],
       currentBidLakhs: 0,
       currentBidderId: null,
-      timerSeconds: this.bidTimerSeconds,
+      timerEndsAt: null, // set by startTimer()
       presentedAt: Date.now(),
       matchBidders: [],
     };
@@ -195,15 +195,17 @@ export class AuctionStateManager {
 
   private startTimer(): void {
     this.clearTimer();
+    if (!this.currentLot) return;
+    this.currentLot.timerEndsAt = Date.now() + this.bidTimerSeconds * 1000;
     this.timerRef = setInterval(() => {
-      if (this.isPaused || !this.currentLot) return;
-      this.currentLot.timerSeconds--;
-      this.emit('auction:timer_tick', { seconds: this.currentLot.timerSeconds });
-      if (this.currentLot.timerSeconds <= 0) {
+      if (this.isPaused || !this.currentLot || !this.currentLot.timerEndsAt) return;
+      const remaining = this.currentLot.timerEndsAt - Date.now();
+      this.emit('auction:timer_tick', { timerEndsAt: this.currentLot.timerEndsAt });
+      if (remaining <= 0) {
         this.clearTimer();
         void this.onTimerExpiry();
       }
-    }, 1000);
+    }, 500);
   }
 
   private clearTimer(): void {
@@ -269,7 +271,6 @@ export class AuctionStateManager {
       this.currentLot.matchBidders = [];
       this.currentLot.currentBidLakhs = amount;
       this.currentLot.currentBidderId = memberId;
-      this.currentLot.timerSeconds = this.bidTimerSeconds;
 
       const db = getDb();
       const lotId = this.currentLot.lotId;
@@ -280,7 +281,7 @@ export class AuctionStateManager {
         .catch(err => console.error('[auction] bid persist error:', err));
 
       this.clearTimer();
-      this.startTimer();
+      this.startTimer(); // resets timerEndsAt
     }
 
     const allInInfo = this.members.map(m => ({
@@ -351,6 +352,7 @@ export class AuctionStateManager {
     });
 
     this.currentLot = null;
+    this.broadcastSnapshot(); // snapshot with null lot for the "sold" interstitial
 
     if (this.checkAuctionComplete()) { this.endAuction(); return; }
 
@@ -379,6 +381,7 @@ export class AuctionStateManager {
 
     this.emit('auction:player_unsold', { lot: this.serializeLot() });
     this.currentLot = null;
+    this.broadcastSnapshot(); // snapshot with null lot
 
     if (this.phase === 'PHASE1') this.currentQueueIndex++;
     else if (this.nomination) this.nomination.currentIndex++;
@@ -545,7 +548,6 @@ export class AuctionStateManager {
     this.currentLot.bids.push(bid);
     this.currentLot.currentBidLakhs = amount;
     this.currentLot.currentBidderId = member.id;
-    this.currentLot.timerSeconds = this.bidTimerSeconds;
 
     const db = getDb();
     db.insert(bids).values({ lotId: this.currentLot.lotId, memberId: member.id, amountLakhs: amount, isWinning: true, isAllIn })
@@ -740,6 +742,10 @@ export class AuctionStateManager {
       return getEligiblePlayersForNomination(nominator, this.phase2Pool, this.squadSize, this.minOpeningBidLakhs).map(p => p.id);
     })();
 
+    const remainingPlayerCount = this.phase === 'PHASE1'
+      ? Math.max(0, this.playerQueue.length - this.currentQueueIndex)
+      : this.phase2Pool.length;
+
     return {
       leagueId: this.leagueId,
       phase: this.phase,
@@ -759,6 +765,7 @@ export class AuctionStateManager {
       undoAvailable: !!this.undoBuffer && (this.totalSold - (this.undoBuffer.allotmentIndex) - 1) < 2,
       totalSold: this.totalSold,
       totalUnsold: this.totalUnsold,
+      remainingPlayerCount,
       allotmentsSinceLastUndo: this.undoBuffer ? this.totalSold - this.undoBuffer.allotmentIndex - 1 : 0,
     };
   }
@@ -783,7 +790,21 @@ export class AuctionStateManager {
 
   private emit(event: string, data: unknown): void {
     try {
-      getIO().to(`league:${this.leagueId}`).emit(event, data);
+      const io = getIO();
+      io.to(`league:${this.leagueId}`).emit(event, data);
+      // Broadcast full snapshot after every state change (skip timer ticks to avoid flooding)
+      if (event !== 'auction:timer_tick') {
+        io.to(`league:${this.leagueId}`).emit('auction:state_snapshot', this.getSnapshot());
+      }
+    } catch {
+      // socket not yet initialized
+    }
+  }
+
+  /** Broadcast a fresh snapshot without an accompanying named event. */
+  private broadcastSnapshot(): void {
+    try {
+      getIO().to(`league:${this.leagueId}`).emit('auction:state_snapshot', this.getSnapshot());
     } catch {
       // socket not yet initialized
     }
