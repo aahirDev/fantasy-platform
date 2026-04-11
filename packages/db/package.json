@@ -24,9 +24,11 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "seed": "tsx src/seed.ts",
+    "import-matches": "tsx src/importMatches.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@fantasy/scoring": "workspace:*",
     "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.3",
     "postgres": "^3.4.5"
