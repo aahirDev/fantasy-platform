@@ -108,6 +108,97 @@ function NominationOverlay({
   );
 }
 
+// ── Phase transition overlay ──────────────────────────────────────────────────
+
+function PhaseTransitionOverlay({
+  snapshot,
+  isCommissioner,
+  onSkip,
+}: {
+  snapshot: AuctionSnapshot;
+  isCommissioner: boolean;
+  onSkip: () => void;
+}) {
+  const [secsLeft, setSecsLeft] = useState(() =>
+    snapshot.transitionEndsAt ? Math.max(0, Math.ceil((snapshot.transitionEndsAt - Date.now()) / 1000)) : 0
+  );
+
+  useEffect(() => {
+    if (!snapshot.transitionEndsAt) return;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((snapshot.transitionEndsAt! - Date.now()) / 1000));
+      setSecsLeft(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [snapshot.transitionEndsAt]);
+
+  return (
+    <div className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-[#0a0a0f]">
+      {/* Ambient glow */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full bg-indigo-600/10 blur-3xl" />
+      </div>
+
+      <div className="relative flex flex-col items-center gap-8 px-6 text-center">
+        {/* Phase badge */}
+        <div className="flex items-center gap-2">
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/20 text-green-400 border border-green-500/30 tracking-widest uppercase">
+            Phase 1 Complete
+          </span>
+        </div>
+
+        {/* Headline */}
+        <div>
+          <h1 className="text-4xl sm:text-5xl font-black text-white tracking-tight">
+            Phase 2 Starting
+          </h1>
+          <p className="text-white/40 mt-2 text-base">
+            Nomination round — teams pick from the unsold pool
+          </p>
+        </div>
+
+        {/* Countdown ring */}
+        <div className="flex flex-col items-center gap-3">
+          <CountdownRing endsAt={snapshot.transitionEndsAt} totalSeconds={30} size={120} stroke={8} />
+          <p className="text-white/50 text-sm tabular-nums">
+            {secsLeft}s until Phase 2
+          </p>
+        </div>
+
+        {/* Stats summary */}
+        <div className="flex items-center gap-6 bg-white/5 border border-white/10 rounded-2xl px-8 py-5">
+          <div className="text-center">
+            <p className="text-3xl font-black text-green-400 tabular-nums">{snapshot.totalSold}</p>
+            <p className="text-white/40 text-xs mt-0.5 uppercase tracking-wider">Sold</p>
+          </div>
+          <div className="w-px h-10 bg-white/10" />
+          <div className="text-center">
+            <p className="text-3xl font-black text-red-400 tabular-nums">{snapshot.totalUnsold}</p>
+            <p className="text-white/40 text-xs mt-0.5 uppercase tracking-wider">Unsold</p>
+          </div>
+          <div className="w-px h-10 bg-white/10" />
+          <div className="text-center">
+            <p className="text-3xl font-black text-indigo-400 tabular-nums">{snapshot.phase2Pool.length}</p>
+            <p className="text-white/40 text-xs mt-0.5 uppercase tracking-wider">In Pool</p>
+          </div>
+        </div>
+
+        {/* Commissioner skip */}
+        {isCommissioner && (
+          <button
+            onClick={onSkip}
+            className="text-white/30 hover:text-white/60 text-sm underline underline-offset-4 transition-colors"
+          >
+            Start Phase 2 now
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Bid panel ─────────────────────────────────────────────────────────────────
 
 function BidPanel({
@@ -475,6 +566,15 @@ export default function AuctionRoom() {
         <div className="flex items-center justify-center h-64">
           <div className="text-white/30 text-sm">Connecting to auction…</div>
         </div>
+      )}
+
+      {/* Phase 1 → 2 transition screen */}
+      {snapshot?.transitionEndsAt && (
+        <PhaseTransitionOverlay
+          snapshot={snapshot}
+          isCommissioner={isCommissioner}
+          onSkip={skipToPhase2}
+        />
       )}
 
       {snapshot && (

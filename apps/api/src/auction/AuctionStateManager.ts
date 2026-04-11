@@ -49,6 +49,7 @@ export class AuctionStateManager {
   undoBuffer: UndoEntry | null = null;
   totalSold = 0;
   totalUnsold = 0;
+  transitionEndsAt: number | null = null;
   private lotOrderCounter = 0;
 
   private timerRef: ReturnType<typeof setInterval> | null = null;
@@ -423,8 +424,11 @@ export class AuctionStateManager {
   }
 
   private endPhase1(): void {
+    this.transitionEndsAt = Date.now() + SQUAD_RULES.PHASE_TRANSITION_SECONDS * 1000;
+
     this.emit('auction:phase1_complete', {
       transitionSeconds: SQUAD_RULES.PHASE_TRANSITION_SECONDS,
+      transitionEndsAt: this.transitionEndsAt,
       totalSold: this.totalSold,
       totalUnsold: this.totalUnsold,
       phase2PoolSize: this.phase2Pool.length,
@@ -437,6 +441,7 @@ export class AuctionStateManager {
       .catch(err => console.error('[auction] phase update error:', err));
 
     setTimeout(() => {
+      this.transitionEndsAt = null;
       this.phase = 'PHASE2';
       this.startPhase2();
     }, SQUAD_RULES.PHASE_TRANSITION_SECONDS * 1000);
@@ -767,6 +772,7 @@ export class AuctionStateManager {
       totalUnsold: this.totalUnsold,
       remainingPlayerCount,
       allotmentsSinceLastUndo: this.undoBuffer ? this.totalSold - this.undoBuffer.allotmentIndex - 1 : 0,
+      transitionEndsAt: this.transitionEndsAt,
     };
   }
 

@@ -75,4 +75,6 @@ export interface AuctionSnapshot {
   totalUnsold: number;
   remainingPlayerCount: number;
   allotmentsSinceLastUndo: number;
+  /** Epoch ms when Phase 2 begins; non-null only during the 30s transition gap */
+  transitionEndsAt: number | null;
 }
