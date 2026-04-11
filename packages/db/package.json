@@ -25,6 +25,9 @@
     "db:studio": "drizzle-kit studio",
     "seed": "tsx src/seed.ts",
     "import-matches": "tsx src/importMatches.ts",
+    "seed-league": "tsx src/seedLeague.ts",
+    "list-leagues": "tsx src/listLeagues.ts",
+    "list-users": "tsx src/listUsers.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
