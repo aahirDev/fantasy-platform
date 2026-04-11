@@ -23,16 +23,18 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
+    "seed": "tsx src/seed.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "dotenv": "^16.4.7",
     "drizzle-orm": "^0.38.3",
-    "postgres": "^3.4.5",
-    "dotenv": "^16.4.7"
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
-    "drizzle-kit": "^0.30.2",
     "@types/node": "^22.10.7",
+    "drizzle-kit": "^0.30.2",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
 }
