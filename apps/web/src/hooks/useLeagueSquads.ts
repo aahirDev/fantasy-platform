@@ -2,6 +2,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import type { League } from './useLeagues';
 
+export interface SyncResult {
+  synced: number[];
+  skipped: number[];
+  failed: Array<{ matchNumber: number; error: string }>;
+  message: string;
+}
+
 export interface SquadPlayer {
   playerId: string;
   playerName: string;
@@ -57,6 +64,21 @@ export function useStartAuction(leagueId: string | undefined) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['league', leagueId] });
       void qc.invalidateQueries({ queryKey: ['leagues'] });
+    },
+  });
+}
+
+export function useSyncMatches(leagueId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<SyncResult>({
+    mutationFn: () =>
+      apiFetch('/api/matches/sync', {
+        method: 'POST',
+        body: JSON.stringify({ leagueId }),
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['league-squads', leagueId] });
     },
   });
 }

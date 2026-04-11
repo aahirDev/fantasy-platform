@@ -6,6 +6,7 @@ import helmet from 'helmet';
 
 import { authRouter } from './routes/auth.js';
 import { leaguesRouter } from './routes/leagues.js';
+import { matchesRouter } from './routes/matches.js';
 import { playersRouter } from './routes/players.js';
 import { scoringRouter } from './routes/scoring.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -32,6 +33,7 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/auth', authMiddleware, authRouter);
 app.use('/api/leagues', authMiddleware, leaguesRouter);
+app.use('/api/matches', authMiddleware, matchesRouter);
 app.use('/api/players', authMiddleware, playersRouter);
 app.use('/api/scoring', authMiddleware, scoringRouter);
 

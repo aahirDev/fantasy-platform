@@ -3,9 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import { useAuthStore } from '../store/auth';
-import { useLeagueSquads, useStartAuction } from '../hooks/useLeagueSquads';
+import { useLeagueSquads, useStartAuction, useSyncMatches } from '../hooks/useLeagueSquads';
 import type { League } from '../hooks/useLeagues';
-import type { LeagueMember, SquadPlayer } from '../hooks/useLeagueSquads';
+import type { LeagueMember, SquadPlayer, SyncResult } from '../hooks/useLeagueSquads';
 
 // ── Role badge ────────────────────────────────────────────────────────────────
 
@@ -354,11 +354,30 @@ function PlayersTab({ members }: { members: LeagueMember[] }) {
 
 function HubView({ league, internalUserId }: { league: League; internalUserId: string | null }) {
   const [tab, setTab] = useState<HubTab>('standings');
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const { data, isLoading } = useLeagueSquads(league.id);
+  const { mutate: syncMatches, isPending: syncing } = useSyncMatches(league.id);
 
   const members = data?.members ?? [];
   const matchesPlayed = data?.matchesPlayed ?? 0;
   const isComplete = league.status === 'COMPLETE';
+  const isCommissioner = internalUserId === league.commissionerId;
+
+  function handleSync() {
+    setSyncMsg(null);
+    syncMatches(undefined, {
+      onSuccess: (result: SyncResult) => {
+        if (result.synced.length > 0) {
+          setSyncMsg(`✓ Synced match${result.synced.length !== 1 ? 'es' : ''} ${result.synced.join(', ')}`);
+        } else {
+          setSyncMsg(result.message);
+        }
+      },
+      onError: (err: unknown) => {
+        setSyncMsg(`✗ ${err instanceof Error ? err.message : 'Sync failed'}`);
+      },
+    });
+  }
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white">
@@ -377,12 +396,39 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
               {matchesPlayed > 0 && ` · ${matchesPlayed} match${matchesPlayed !== 1 ? 'es' : ''} played`}
             </p>
           </div>
-          {internalUserId === league.commissionerId && (
-            <span className="text-amber-400 text-[10px] font-bold bg-amber-400/10 border border-amber-400/20 rounded px-2 py-1">
-              COMMISSIONER
-            </span>
+          {isCommissioner && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSync}
+                disabled={syncing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors"
+                title="Fetch latest completed matches from CricAPI and compute fantasy points"
+              >
+                {syncing ? (
+                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                )}
+                {syncing ? 'Syncing…' : 'Sync Scores'}
+              </button>
+              <span className="text-amber-400 text-[10px] font-bold bg-amber-400/10 border border-amber-400/20 rounded px-2 py-1">
+                COMMISSIONER
+              </span>
+            </div>
           )}
         </div>
+        {syncMsg && (
+          <div className="max-w-2xl mx-auto mt-2">
+            <p className={`text-xs px-3 py-1.5 rounded-lg ${syncMsg.startsWith('✓') ? 'bg-green-500/10 text-green-400 border border-green-500/20' : syncMsg.startsWith('✗') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-white/50 border border-white/10'}`}>
+              {syncMsg}
+            </p>
+          </div>
+        )}
       </header>
 
       {/* Tabs */}
