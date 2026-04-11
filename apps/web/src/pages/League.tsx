@@ -1,28 +1,459 @@
-import { useEffect } from 'react';
+import { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
+import { useAuthStore } from '../store/auth';
+import { useLeagueSquads, useStartAuction } from '../hooks/useLeagueSquads';
 import type { League } from '../hooks/useLeagues';
+import type { LeagueMember, SquadPlayer } from '../hooks/useLeagueSquads';
+
+// ── Role badge ────────────────────────────────────────────────────────────────
+
+const ROLE_COLOR: Record<string, string> = {
+  WK:   'bg-amber-500/20 text-amber-300 border-amber-500/30',
+  BAT:  'bg-blue-500/20 text-blue-300 border-blue-500/30',
+  BOWL: 'bg-red-500/20 text-red-300 border-red-500/30',
+  AR:   'bg-purple-500/20 text-purple-300 border-purple-500/30',
+};
+
+function RoleBadge({ role }: { role: string }) {
+  return (
+    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${ROLE_COLOR[role] ?? 'bg-white/10 text-white/60 border-white/10'}`}>
+      {role}
+    </span>
+  );
+}
+
+function Avatar({ name, size = 32 }: { name: string; size?: number }) {
+  const initials = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  return (
+    <span
+      className="inline-flex items-center justify-center rounded-full bg-white/10 border border-white/10 text-white/70 font-bold flex-shrink-0"
+      style={{ width: size, height: size, fontSize: size * 0.35 }}
+    >
+      {initials}
+    </span>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LOBBY VIEW
+// ══════════════════════════════════════════════════════════════════════════════
+
+function LobbyView({ league, internalUserId }: { league: League; internalUserId: string | null }) {
+  const { data: squadsData, isLoading } = useLeagueSquads(league.id);
+  const { mutate: startAuction, isPending: starting, error: startError } = useStartAuction(league.id);
+  const navigate = useNavigate();
+  const [copied, setCopied] = useState(false);
+
+  const isCommissioner = internalUserId === league.commissionerId;
+  const members = squadsData?.members ?? [];
+
+  function handleStart() {
+    startAuction(undefined, {
+      onSuccess: () => navigate(`/league/${league.id}/auction`),
+    });
+  }
+
+  function copyCode() {
+    navigator.clipboard.writeText(league.inviteCode ?? '').then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  return (
+    <div className="max-w-xl mx-auto px-4 py-8 space-y-6">
+      {/* Header */}
+      <div>
+        <p className="text-white/40 text-xs uppercase tracking-widest mb-1">Lobby</p>
+        <h1 className="text-3xl font-black text-white">{league.name}</h1>
+        {league.seasonName && <p className="text-white/50 text-sm mt-1">{league.seasonName}</p>}
+      </div>
+
+      {/* Invite code */}
+      <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
+        <p className="text-white/40 text-xs uppercase tracking-widest mb-2">Invite Code</p>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-2xl font-bold text-white tracking-widest">{league.inviteCode}</span>
+          <button
+            onClick={copyCode}
+            className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-white/60 hover:text-white text-xs font-semibold transition-colors"
+          >
+            {copied ? '✓ Copied' : 'Copy'}
+          </button>
+        </div>
+        <p className="text-white/30 text-xs mt-2">Share this code so others can join</p>
+      </div>
+
+      {/* Config pills */}
+      <div className="flex flex-wrap gap-2">
+        {[
+          { label: 'Teams', value: `${members.length} / ${league.numTeams}` },
+          { label: 'Budget', value: `${league.totalBudgetLakhs} pts` },
+          { label: 'Squad size', value: league.squadSize },
+          { label: 'Bid timer', value: `${league.bidTimerSeconds}s` },
+        ].map(({ label, value }) => (
+          <div key={label} className="bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-center">
+            <p className="text-white/40 text-[10px] uppercase tracking-wider">{label}</p>
+            <p className="text-white font-bold text-sm">{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Members */}
+      <div>
+        <p className="text-white/40 text-xs uppercase tracking-widest mb-3">
+          Teams ({members.length}/{league.numTeams})
+        </p>
+        {isLoading ? (
+          <p className="text-white/20 text-sm">Loading…</p>
+        ) : members.length === 0 ? (
+          <p className="text-white/30 text-sm">No teams yet — share the invite code</p>
+        ) : (
+          <div className="space-y-2">
+            {members.map(m => (
+              <div key={m.id} className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+                <Avatar name={m.teamName} size={36} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-white font-semibold text-sm truncate">{m.teamName}</p>
+                  <p className="text-white/40 text-xs">{m.username}</p>
+                </div>
+                <span className={`w-2 h-2 rounded-full ${m.isOnline ? 'bg-green-400' : 'bg-white/20'}`} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Start auction */}
+      {isCommissioner && (
+        <div className="space-y-2">
+          {startError && (
+            <p className="text-red-400 text-sm text-center">
+              {(startError as Error).message}
+            </p>
+          )}
+          <button
+            onClick={handleStart}
+            disabled={starting || members.length < 2}
+            className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold text-lg rounded-2xl transition-colors"
+          >
+            {starting ? 'Starting…' : 'Start Auction'}
+          </button>
+          {members.length < 2 && (
+            <p className="text-white/30 text-xs text-center">Need at least 2 teams to start</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HUB VIEW (post-auction tabs)
+// ══════════════════════════════════════════════════════════════════════════════
+
+type HubTab = 'standings' | 'squads' | 'players';
+
+// ── Standings tab ─────────────────────────────────────────────────────────────
+
+function StandingsTab({ members, matchesPlayed }: { members: LeagueMember[]; matchesPlayed: number }) {
+  return (
+    <div className="space-y-3">
+      {matchesPlayed === 0 && (
+        <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-center text-white/40 text-sm">
+          Points will appear here once match scores are synced
+        </div>
+      )}
+      {members.map((m, idx) => {
+        const rank = idx + 1;
+        const rankColor = rank === 1 ? 'text-amber-400' : rank === 2 ? 'text-slate-300' : rank === 3 ? 'text-orange-400' : 'text-white/40';
+        return (
+          <div key={m.id} className="flex items-center gap-4 bg-white/5 border border-white/10 rounded-xl px-4 py-3">
+            <span className={`text-xl font-black w-6 text-center ${rankColor}`}>{rank}</span>
+            <Avatar name={m.teamName} size={36} />
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-semibold text-sm truncate">{m.teamName}</p>
+              <p className="text-white/40 text-xs">{m.username} · {m.squad.length} players</p>
+            </div>
+            <div className="text-right flex-shrink-0">
+              <p className="text-white font-black text-xl tabular-nums">{m.totalPoints.toLocaleString()}</p>
+              <p className="text-white/30 text-xs">pts</p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Squad card ────────────────────────────────────────────────────────────────
+
+function SquadCard({ member, leagueBudget }: { member: LeagueMember; leagueBudget: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const spentPct = leagueBudget > 0 ? (member.totalSpent / leagueBudget) * 100 : 0;
+
+  const byRole = member.squad.reduce<Record<string, SquadPlayer[]>>((acc, p) => {
+    (acc[p.role] ??= []).push(p);
+    return acc;
+  }, {});
+
+  return (
+    <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+      <button
+        className="w-full flex items-center gap-4 px-5 py-4 text-left"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <Avatar name={member.teamName} size={40} />
+        <div className="flex-1 min-w-0">
+          <p className="text-white font-bold truncate">{member.teamName}</p>
+          <p className="text-white/40 text-xs">{member.username} · {member.squad.length} players</p>
+          {/* Budget bar */}
+          <div className="mt-1.5 h-1 bg-white/10 rounded-full w-32 overflow-hidden">
+            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${spentPct}%` }} />
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="text-white font-black text-lg tabular-nums">{member.totalPoints.toLocaleString()}</p>
+          <p className="text-white/30 text-[10px]">pts</p>
+          <p className="text-white/40 text-xs mt-0.5">{member.budgetRemainingLakhs} left</p>
+        </div>
+        <svg className={`w-4 h-4 text-white/30 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-white/10 p-4 space-y-4">
+          {(['WK', 'BAT', 'AR', 'BOWL'] as const).map(role => {
+            const group = byRole[role];
+            if (!group?.length) return null;
+            const labels: Record<string, string> = { WK: 'Wicket-keepers', BAT: 'Batters', AR: 'All-rounders', BOWL: 'Bowlers' };
+            return (
+              <div key={role}>
+                <p className="text-white/30 text-[10px] uppercase tracking-widest mb-2 flex items-center gap-2">
+                  <RoleBadge role={role} />
+                  <span>{labels[role]}</span>
+                </p>
+                <div className="space-y-1.5">
+                  {group.map(p => (
+                    <div key={p.playerId} className="flex items-center gap-2">
+                      <span className="flex-1 text-white/80 text-sm font-medium truncate">{p.playerName}</span>
+                      {p.teamCode && <span className="text-white/30 text-xs font-mono">{p.teamCode}</span>}
+                      {p.isOverseas && <span className="text-[10px] text-sky-400 border border-sky-500/30 bg-sky-500/10 px-1 rounded">OS</span>}
+                      <span className="text-white/60 text-xs tabular-nums font-semibold">{p.acquisitionPriceLakhs}p</span>
+                      {p.fantasyPoints > 0 && (
+                        <span className="text-green-400 text-xs tabular-nums font-bold ml-1">+{p.fantasyPoints}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SquadsTab({ members, leagueBudget }: { members: LeagueMember[]; leagueBudget: number }) {
+  return (
+    <div className="space-y-3">
+      {members.map(m => (
+        <SquadCard key={m.id} member={m} leagueBudget={leagueBudget} />
+      ))}
+    </div>
+  );
+}
+
+// ── Players tab ───────────────────────────────────────────────────────────────
+
+function PlayersTab({ members }: { members: LeagueMember[] }) {
+  const [sortBy, setSortBy] = useState<'price' | 'points'>('points');
+  const [filterRole, setFilterRole] = useState<string>('ALL');
+
+  // Flatten all squad players with ownership info
+  const allPlayers = members.flatMap(m =>
+    m.squad.map(p => ({ ...p, teamName: m.teamName, username: m.username }))
+  );
+
+  const filtered = allPlayers
+    .filter(p => filterRole === 'ALL' || p.role === filterRole)
+    .sort((a, b) => sortBy === 'price'
+      ? b.acquisitionPriceLakhs - a.acquisitionPriceLakhs
+      : b.fantasyPoints - a.fantasyPoints
+    );
+
+  return (
+    <div className="space-y-3">
+      {/* Controls */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex gap-1 bg-white/5 rounded-xl p-1">
+          {(['points', 'price'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => setSortBy(s)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${sortBy === s ? 'bg-white/10 text-white' : 'text-white/40'}`}
+            >
+              {s === 'points' ? 'By Points' : 'By Price'}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1 bg-white/5 rounded-xl p-1">
+          {(['ALL', 'WK', 'BAT', 'AR', 'BOWL'] as const).map(r => (
+            <button
+              key={r}
+              onClick={() => setFilterRole(r)}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${filterRole === r ? 'bg-white/10 text-white' : 'text-white/40'}`}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+        <div className="grid grid-cols-[2rem_1fr_auto_auto] gap-x-3 px-4 py-2 border-b border-white/10">
+          <span className="text-white/30 text-[10px] uppercase tracking-wider">#</span>
+          <span className="text-white/30 text-[10px] uppercase tracking-wider">Player</span>
+          <span className="text-white/30 text-[10px] uppercase tracking-wider text-right">Price</span>
+          <span className="text-white/30 text-[10px] uppercase tracking-wider text-right">Pts</span>
+        </div>
+        {filtered.map((p, i) => (
+          <div
+            key={`${p.playerId}-${i}`}
+            className="grid grid-cols-[2rem_1fr_auto_auto] gap-x-3 px-4 py-2.5 border-b border-white/5 last:border-0 hover:bg-white/5 transition-colors"
+          >
+            <span className="text-white/30 text-sm tabular-nums">{i + 1}</span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <RoleBadge role={p.role} />
+                {p.isOverseas && <span className="text-[10px] text-sky-400">OS</span>}
+                <span className="text-white text-sm font-medium truncate">{p.playerName}</span>
+              </div>
+              <p className="text-white/30 text-xs mt-0.5">{p.teamName} · {p.teamCode}</p>
+            </div>
+            <span className="text-white/60 text-sm tabular-nums text-right self-center">{p.acquisitionPriceLakhs}p</span>
+            <span className={`text-sm tabular-nums font-bold text-right self-center ${p.fantasyPoints > 0 ? 'text-green-400' : 'text-white/20'}`}>
+              {p.fantasyPoints > 0 ? `+${p.fantasyPoints}` : '—'}
+            </span>
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <p className="text-white/30 text-sm text-center py-8">No players</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Hub wrapper ───────────────────────────────────────────────────────────────
+
+function HubView({ league, internalUserId }: { league: League; internalUserId: string | null }) {
+  const [tab, setTab] = useState<HubTab>('standings');
+  const { data, isLoading } = useLeagueSquads(league.id);
+
+  const members = data?.members ?? [];
+  const matchesPlayed = data?.matchesPlayed ?? 0;
+  const isComplete = league.status === 'COMPLETE';
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0f] text-white">
+      {/* Header */}
+      <header className="border-b border-white/10 px-4 py-3">
+        <div className="max-w-2xl mx-auto flex items-center gap-3">
+          <Link to="/" className="text-white/50 hover:text-white transition-colors">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </Link>
+          <div className="flex-1 min-w-0">
+            <h1 className="font-bold text-base truncate">{league.name}</h1>
+            <p className="text-white/40 text-xs">
+              {isComplete ? 'Season complete' : 'Season active'}
+              {matchesPlayed > 0 && ` · ${matchesPlayed} match${matchesPlayed !== 1 ? 'es' : ''} played`}
+            </p>
+          </div>
+          {internalUserId === league.commissionerId && (
+            <span className="text-amber-400 text-[10px] font-bold bg-amber-400/10 border border-amber-400/20 rounded px-2 py-1">
+              COMMISSIONER
+            </span>
+          )}
+        </div>
+      </header>
+
+      {/* Tabs */}
+      <div className="border-b border-white/10">
+        <div className="max-w-2xl mx-auto flex">
+          {([
+            { id: 'standings', label: 'Standings' },
+            { id: 'squads', label: 'Squads' },
+            { id: 'players', label: 'Players' },
+          ] as { id: HubTab; label: string }[]).map(t => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex-1 py-3 text-sm font-semibold transition-colors border-b-2 ${
+                tab === t.id
+                  ? 'text-white border-indigo-500'
+                  : 'text-white/40 border-transparent hover:text-white/70'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="max-w-2xl mx-auto px-4 py-5">
+        {isLoading ? (
+          <div className="text-center text-white/30 py-16">Loading…</div>
+        ) : (
+          <>
+            {tab === 'standings' && <StandingsTab members={members} matchesPlayed={matchesPlayed} />}
+            {tab === 'squads' && <SquadsTab members={members} leagueBudget={league.totalBudgetLakhs} />}
+            {tab === 'players' && <PlayersTab members={members} />}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PAGE ENTRY
+// ══════════════════════════════════════════════════════════════════════════════
 
 export default function LeaguePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { internalUserId } = useAuthStore();
 
   const { data: league, isLoading } = useQuery<League>({
     queryKey: ['league', id],
     queryFn: () => apiFetch(`/api/leagues/${id}`),
+    enabled: !!id,
+    refetchInterval: (query) => {
+      // Poll while in auction phases so we catch transitions
+      const status = query.state.data?.status;
+      return status === 'AUCTION_PHASE1' || status === 'AUCTION_PHASE2' ? 5000 : false;
+    },
   });
 
-  useEffect(() => {
-    if (league && (league.status === 'AUCTION_PHASE1' || league.status === 'AUCTION_PHASE2')) {
-      navigate(`/league/${id}/auction`, { replace: true });
-    }
-  }, [league, id, navigate]);
+  // Redirect mid-auction
+  if (league?.status === 'AUCTION_PHASE1' || league?.status === 'AUCTION_PHASE2') {
+    navigate(`/league/${id}/auction`, { replace: true });
+    return null;
+  }
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center text-white/30">
-        Loading league...
+      <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center text-white/30 text-sm">
+        Loading…
       </div>
     );
   }
@@ -32,26 +463,32 @@ export default function LeaguePage() {
       <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center">
         <div className="text-center">
           <p className="text-red-400 font-semibold">League not found</p>
-          <Link to="/" className="mt-2 text-white/50 hover:text-white text-sm underline block">Back to home</Link>
+          <Link to="/" className="mt-2 text-white/50 hover:text-white text-sm underline block">
+            Back to home
+          </Link>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white px-4 py-8 max-w-2xl mx-auto">
-      <Link to="/" className="text-white/40 hover:text-white text-sm flex items-center gap-1 mb-6">
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-        </svg>
-        Back
-      </Link>
-      <h1 className="text-3xl font-black mb-1">{league.name}</h1>
-      {league.seasonName && <p className="text-white/50 text-sm mb-6">{league.seasonName}</p>}
-      <div className="bg-white/5 border border-white/10 rounded-2xl p-6 text-center">
-        <p className="text-white/50 text-sm">Status: <span className="text-white font-semibold">{league.status}</span></p>
-        <p className="text-white/40 text-sm mt-1">Invite code: <span className="font-mono text-white">{league.inviteCode}</span></p>
+  // LOBBY
+  if (league.status === 'LOBBY') {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white">
+        <header className="border-b border-white/10 px-4 py-3">
+          <div className="max-w-xl mx-auto flex items-center gap-3">
+            <Link to="/" className="text-white/50 hover:text-white transition-colors">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </Link>
+          </div>
+        </header>
+        <LobbyView league={league} internalUserId={internalUserId} />
       </div>
-    </div>
-  );
+    );
+  }
+
+  // ACTIVE or COMPLETE → hub
+  return <HubView league={league} internalUserId={internalUserId} />;
 }

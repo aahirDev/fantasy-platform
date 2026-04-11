@@ -1,8 +1,8 @@
 import { Router, type Router as RouterType } from 'express';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
 import { getDb } from '@fantasy/db';
-import { leagues, leagueMembers } from '@fantasy/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { leagues, leagueMembers, squadPlayers, players, users, captainAssignments, matchScores } from '@fantasy/db/schema';
+import { eq, and, sql } from 'drizzle-orm';
 import { nanoid } from '../lib/nanoid.js';
 import { AuctionStateManager, getAuction } from '../auction/AuctionStateManager.js';
 
@@ -138,6 +138,135 @@ leaguesRouter.post('/join', async (req: AuthenticatedRequest, res) => {
       .returning();
     res.status(201).json({ league, member });
   } catch (err) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/leagues/:id/squads
+ * Returns all members with their full squads, points, and captain assignments.
+ * Points are 0 if no match scores have been synced yet.
+ */
+leaguesRouter.get('/:id/squads', async (req, res) => {
+  try {
+    const db = getDb();
+    const leagueId = req.params['id']!;
+
+    const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId));
+    if (!league) { res.status(404).json({ error: 'League not found' }); return; }
+
+    // Members + usernames
+    const members = await db
+      .select({
+        id: leagueMembers.id,
+        userId: leagueMembers.userId,
+        teamName: leagueMembers.teamName,
+        budgetRemainingLakhs: leagueMembers.budgetRemainingLakhs,
+        isOnline: leagueMembers.isOnline,
+        username: users.username,
+        displayName: users.displayName,
+      })
+      .from(leagueMembers)
+      .innerJoin(users, eq(leagueMembers.userId, users.id))
+      .where(eq(leagueMembers.leagueId, leagueId));
+
+    // Squad players + player details for each member
+    const squadRows = await db
+      .select({
+        memberId: squadPlayers.memberId,
+        playerId: players.id,
+        playerName: players.name,
+        role: players.role,
+        teamCode: players.teamCode,
+        isOverseas: players.isOverseas,
+        isUncapped: players.isUncapped,
+        acquisitionPriceLakhs: squadPlayers.acquisitionPriceLakhs,
+        rosterConfig: squadPlayers.rosterConfig,
+      })
+      .from(squadPlayers)
+      .innerJoin(players, eq(squadPlayers.playerId, players.id))
+      .innerJoin(leagueMembers, eq(squadPlayers.memberId, leagueMembers.id))
+      .where(eq(leagueMembers.leagueId, leagueId));
+
+    // Captain assignments per member
+    const captains = await db
+      .select({
+        memberId: captainAssignments.memberId,
+        playerId: captainAssignments.playerId,
+        role: captainAssignments.role,
+        fromMatch: captainAssignments.fromMatch,
+      })
+      .from(captainAssignments)
+      .innerJoin(leagueMembers, eq(captainAssignments.memberId, leagueMembers.id))
+      .where(eq(leagueMembers.leagueId, leagueId));
+
+    // Aggregate fantasy points per member from match_scores
+    const memberScores = await db
+      .select({
+        playerId: matchScores.playerId,
+        totalPoints: sql<number>`coalesce(sum(coalesce(${matchScores.manualOverridePoints}, ${matchScores.fantasyPoints}, 0)), 0)`.as('total_points'),
+        matchCount: sql<number>`count(*)`.as('match_count'),
+      })
+      .from(matchScores)
+      .where(eq(matchScores.leagueId, leagueId))
+      .groupBy(matchScores.playerId);
+
+    const pointsByPlayerId = Object.fromEntries(
+      memberScores.map(r => [r.playerId, { totalPoints: Number(r.totalPoints), matchCount: Number(r.matchCount) }])
+    );
+
+    // Group squads by member
+    const squadsByMember = squadRows.reduce<Record<string, typeof squadRows>>((acc, row) => {
+      (acc[row.memberId] ??= []).push(row);
+      return acc;
+    }, {});
+
+    const captainsByMember = captains.reduce<Record<string, typeof captains>>((acc, row) => {
+      (acc[row.memberId] ??= []).push(row);
+      return acc;
+    }, {});
+
+    const result = members.map(m => {
+      const squad = (squadsByMember[m.id] ?? []).map(p => ({
+        playerId: p.playerId,
+        playerName: p.playerName,
+        role: p.role,
+        teamCode: p.teamCode,
+        isOverseas: p.isOverseas,
+        isUncapped: p.isUncapped,
+        acquisitionPriceLakhs: p.acquisitionPriceLakhs,
+        rosterConfig: p.rosterConfig,
+        fantasyPoints: pointsByPlayerId[p.playerId]?.totalPoints ?? 0,
+      }));
+
+      const totalSpent = league.totalBudgetLakhs - m.budgetRemainingLakhs;
+      const totalPoints = squad.reduce((sum, p) => sum + p.fantasyPoints, 0);
+
+      return {
+        id: m.id,
+        userId: m.userId,
+        teamName: m.teamName,
+        username: m.username,
+        displayName: m.displayName,
+        budgetRemainingLakhs: m.budgetRemainingLakhs,
+        totalSpent,
+        totalPoints,
+        isOnline: m.isOnline,
+        squad: squad.sort((a, b) => {
+          const roleOrder = { WK: 0, BAT: 1, AR: 2, BOWL: 3 };
+          return (roleOrder[a.role as keyof typeof roleOrder] ?? 9) - (roleOrder[b.role as keyof typeof roleOrder] ?? 9);
+        }),
+        captainAssignments: captainsByMember[m.id] ?? [],
+      };
+    });
+
+    res.json({
+      league,
+      members: result.sort((a, b) => b.totalPoints - a.totalPoints),
+      matchesPlayed: memberScores.length > 0 ? Math.max(...memberScores.map(r => r.matchCount)) : 0,
+    });
+  } catch (err) {
+    console.error('[leagues/squads]', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -1,0 +1,74 @@
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from '../lib/api';
+import type { League } from './useLeagues';
+
+export interface SquadPlayer {
+  playerId: string;
+  playerName: string;
+  role: 'WK' | 'BAT' | 'AR' | 'BOWL';
+  teamCode: string | null;
+  isOverseas: boolean;
+  isUncapped: boolean;
+  acquisitionPriceLakhs: number;
+  rosterConfig: { fromMatch: number; toMatch: number | null } | null;
+  fantasyPoints: number;
+}
+
+export interface CaptainAssignment {
+  memberId: string;
+  playerId: string;
+  role: 'CAPTAIN' | 'VICE_CAPTAIN';
+  fromMatch: number;
+}
+
+export interface LeagueMember {
+  id: string;
+  userId: string;
+  teamName: string;
+  username: string;
+  displayName: string | null;
+  budgetRemainingLakhs: number;
+  totalSpent: number;
+  totalPoints: number;
+  isOnline: boolean;
+  squad: SquadPlayer[];
+  captainAssignments: CaptainAssignment[];
+}
+
+export interface LeagueSquadsResponse {
+  league: League;
+  members: LeagueMember[];
+  matchesPlayed: number;
+}
+
+export function useLeagueSquads(leagueId: string | undefined) {
+  return useQuery<LeagueSquadsResponse>({
+    queryKey: ['league-squads', leagueId],
+    queryFn: () => apiFetch(`/api/leagues/${leagueId}/squads`),
+    enabled: !!leagueId,
+    staleTime: 30_000,
+  });
+}
+
+export function useStartAuction(leagueId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch(`/api/leagues/${leagueId}/start`, { method: 'POST' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['league', leagueId] });
+      void qc.invalidateQueries({ queryKey: ['leagues'] });
+    },
+  });
+}
+
+export function useLeagueMembers(leagueId: string | undefined) {
+  return useQuery<LeagueMember[]>({
+    queryKey: ['league-members', leagueId],
+    queryFn: async () => {
+      const data = await apiFetch<LeagueSquadsResponse>(`/api/leagues/${leagueId}/squads`);
+      return data.members;
+    },
+    enabled: !!leagueId,
+    staleTime: 30_000,
+  });
+}
