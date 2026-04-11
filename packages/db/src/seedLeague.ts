@@ -29,6 +29,22 @@ import { normaliseName } from '@fantasy/scoring';
 
 // ─── Source data (inlined from ipl26a:roster_config) ─────────────────────────
 
+// Real Gmail addresses from ipl-fantasy-2026/public/js/config.js GOOGLE_EMAIL_MAP
+const TEAM_EMAILS: Record<string, string> = {
+  aahir:    'aahirgiri@gmail.com',
+  raghav:   'raghavviswa@gmail.com',
+  sreekesh: 'sreekeshkrish@gmail.com',
+  sarath:   'sarathsree94@gmail.com',
+  sajal:    'toshniwalsajal70@gmail.com',
+  sandeep:  'sandeep.babu@furlenco.com',
+  gaurav:   'grvarora3011@gmail.com',
+  surender: 'chauhansurender1994@gmail.com',
+  mayank:   'mayank.rathi18@gmail.com',
+  ark:      'aswinravikumar26@gmail.com',
+  gautam:   'gautistrong@gmail.com',
+  chandira: 'kchandirasekaran007@gmail.com',
+};
+
 const TEAMS = [
   {
     id: 'raghav', owner: 'Raghav', name: "Raghav's XI",
@@ -259,14 +275,13 @@ async function main() {
     .where(like(users.supabaseUid, 'seed_%'));
   const seededUserIds = seededRows.map(u => u.id);
 
+  // Delete league first — cascades to members → squad_players + captain_assignments
+  await db.delete(leagues).where(eq(leagues.name, 'IPL Fantasy 2026 — Auction'));
+
   if (seededUserIds.length > 0) {
     console.log(`Cleaning up ${seededUserIds.length} previously seeded users…`);
-    // Cascade deletes league members → squad players → captain assignments
     await db.delete(users).where(inArray(users.id, seededUserIds));
   }
-
-  // Also clean up leagues seeded previously (by name)
-  await db.delete(leagues).where(eq(leagues.name, 'IPL Fantasy 2026 — Auction'));
 
   // ── 2. Create users ────────────────────────────────────────────────────────
   console.log('Creating 12 users…');
@@ -274,8 +289,8 @@ async function main() {
     .insert(users)
     .values(
       TEAMS.map(t => ({
-        supabaseUid: `seed_${t.id}`,
-        email: `${t.id}@seed.local`,
+        supabaseUid: `seed_${t.id}`,   // placeholder — overwritten on first Google login
+        email: TEAM_EMAILS[t.id] ?? `${t.id}@seed.local`,
         username: t.id,
         displayName: t.owner,
       })),

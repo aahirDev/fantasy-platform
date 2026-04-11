@@ -1,7 +1,7 @@
 import { Router, type Router as RouterType } from 'express';
 import { getDb } from '@fantasy/db';
 import { users } from '@fantasy/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import type { AuthenticatedRequest } from '../middleware/auth.js';
 import { createClient } from '@supabase/supabase-js';
 
@@ -41,21 +41,36 @@ authRouter.post('/sync', async (req: AuthenticatedRequest, res) => {
 
     const db = getDb();
 
-    // Check if user already exists
-    const [existing] = await db
+    // 1. Check by supabaseUid (returning user)
+    const [byUid] = await db
       .select({ id: users.id })
       .from(users)
       .where(eq(users.supabaseUid, supabaseUid));
 
-    if (existing) {
-      res.json({ id: existing.id, created: false });
+    if (byUid) {
+      res.json({ id: byUid.id, created: false });
       return;
     }
 
-    // Insert — handle duplicate username by appending random suffix
+    // 2. Check by email — links a pre-seeded account to a real Google login
+    const [byEmail] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email));
+
+    if (byEmail) {
+      await db
+        .update(users)
+        .set({ supabaseUid, displayName, avatarUrl, updatedAt: new Date() })
+        .where(eq(users.id, byEmail.id));
+      res.json({ id: byEmail.id, created: false });
+      return;
+    }
+
+    // 3. Brand-new user — insert, handling duplicate username
     const baseUsername = username.slice(0, 20).replace(/[^a-zA-Z0-9_]/g, '_');
     let finalUsername = baseUsername;
-    let [conflict] = await db.select({ id: users.id }).from(users).where(eq(users.username, finalUsername));
+    const [conflict] = await db.select({ id: users.id }).from(users).where(eq(users.username, finalUsername));
     if (conflict) {
       finalUsername = `${baseUsername.slice(0, 16)}_${Math.random().toString(36).slice(2, 6)}`;
     }
