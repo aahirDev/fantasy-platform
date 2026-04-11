@@ -19,6 +19,8 @@ export interface SquadPlayer {
   acquisitionPriceLakhs: number;
   rosterConfig: { fromMatch: number; toMatch: number | null } | null;
   fantasyPoints: number;
+  isCaptain: boolean;
+  isViceCaptain: boolean;
 }
 
 export interface CaptainAssignment {
@@ -38,6 +40,8 @@ export interface LeagueMember {
   totalSpent: number;
   totalPoints: number;
   isOnline: boolean;
+  captainPlayerId: string | null;
+  viceCaptainPlayerId: string | null;
   squad: SquadPlayer[];
   captainAssignments: CaptainAssignment[];
 }
@@ -75,6 +79,21 @@ export function useSyncMatches(leagueId: string | undefined) {
       apiFetch('/api/matches/sync', {
         method: 'POST',
         body: JSON.stringify({ leagueId }),
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['league-squads', leagueId] });
+    },
+  });
+}
+
+export function useSetCaptain(leagueId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { captainPlayerId: string; viceCaptainPlayerId: string }) =>
+      apiFetch(`/api/leagues/${leagueId}/captain`, {
+        method: 'POST',
+        body: JSON.stringify(body),
         headers: { 'Content-Type': 'application/json' },
       }),
     onSuccess: () => {

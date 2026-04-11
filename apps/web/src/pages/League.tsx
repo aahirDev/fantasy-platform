@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import { useAuthStore } from '../store/auth';
-import { useLeagueSquads, useStartAuction, useSyncMatches } from '../hooks/useLeagueSquads';
+import { useLeagueSquads, useStartAuction, useSyncMatches, useSetCaptain } from '../hooks/useLeagueSquads';
 import type { League } from '../hooks/useLeagues';
 import type { LeagueMember, SquadPlayer, SyncResult } from '../hooks/useLeagueSquads';
 
@@ -188,81 +188,248 @@ function StandingsTab({ members, matchesPlayed }: { members: LeagueMember[]; mat
   );
 }
 
-// ── Squad card ────────────────────────────────────────────────────────────────
+// ── Captain picker modal ──────────────────────────────────────────────────────
 
-function SquadCard({ member, leagueBudget }: { member: LeagueMember; leagueBudget: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const spentPct = leagueBudget > 0 ? (member.totalSpent / leagueBudget) * 100 : 0;
+function CaptainModal({
+  squad,
+  currentCaptainId,
+  currentVcId,
+  onSave,
+  onClose,
+  saving,
+}: {
+  squad: SquadPlayer[];
+  currentCaptainId: string | null;
+  currentVcId: string | null;
+  onSave: (captainId: string, vcId: string) => void;
+  onClose: () => void;
+  saving: boolean;
+}) {
+  const [captainId, setCaptainId]   = useState(currentCaptainId ?? '');
+  const [vcId, setVcId]             = useState(currentVcId ?? '');
 
-  const byRole = member.squad.reduce<Record<string, SquadPlayer[]>>((acc, p) => {
-    (acc[p.role] ??= []).push(p);
-    return acc;
-  }, {});
+  const canSave = captainId && vcId && captainId !== vcId;
 
   return (
-    <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-      <button
-        className="w-full flex items-center gap-4 px-5 py-4 text-left"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <Avatar name={member.teamName} size={40} />
-        <div className="flex-1 min-w-0">
-          <p className="text-white font-bold truncate">{member.teamName}</p>
-          <p className="text-white/40 text-xs">{member.username} · {member.squad.length} players</p>
-          {/* Budget bar */}
-          <div className="mt-1.5 h-1 bg-white/10 rounded-full w-32 overflow-hidden">
-            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${spentPct}%` }} />
-          </div>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-[#13131a] border border-white/10 rounded-2xl overflow-hidden shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
+          <h2 className="text-white font-bold text-base">Set Captain &amp; Vice-Captain</h2>
+          <button onClick={onClose} className="text-white/40 hover:text-white">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
-        <div className="text-right flex-shrink-0">
-          <p className="text-white font-black text-lg tabular-nums">{member.totalPoints.toLocaleString()}</p>
-          <p className="text-white/30 text-[10px]">pts</p>
-          <p className="text-white/40 text-xs mt-0.5">{member.budgetRemainingLakhs} left</p>
-        </div>
-        <svg className={`w-4 h-4 text-white/30 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
 
-      {expanded && (
-        <div className="border-t border-white/10 p-4 space-y-4">
-          {(['WK', 'BAT', 'AR', 'BOWL'] as const).map(role => {
-            const group = byRole[role];
-            if (!group?.length) return null;
-            const labels: Record<string, string> = { WK: 'Wicket-keepers', BAT: 'Batters', AR: 'All-rounders', BOWL: 'Bowlers' };
+        <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+          {/* Legend */}
+          <div className="flex gap-3 text-xs text-white/40">
+            <span className="flex items-center gap-1.5"><span className="w-5 h-5 rounded-full bg-amber-400 flex items-center justify-center text-[10px] font-black text-black">C</span> 2× points</span>
+            <span className="flex items-center gap-1.5"><span className="w-5 h-5 rounded-full bg-slate-300 flex items-center justify-center text-[10px] font-black text-black">VC</span> 1.5× points</span>
+          </div>
+
+          {squad.map(p => {
+            const isC  = captainId === p.playerId;
+            const isVC = vcId === p.playerId;
             return (
-              <div key={role}>
-                <p className="text-white/30 text-[10px] uppercase tracking-widest mb-2 flex items-center gap-2">
-                  <RoleBadge role={role} />
-                  <span>{labels[role]}</span>
-                </p>
-                <div className="space-y-1.5">
-                  {group.map(p => (
-                    <div key={p.playerId} className="flex items-center gap-2">
-                      <span className="flex-1 text-white/80 text-sm font-medium truncate">{p.playerName}</span>
-                      {p.teamCode && <span className="text-white/30 text-xs font-mono">{p.teamCode}</span>}
-                      {p.isOverseas && <span className="text-[10px] text-sky-400 border border-sky-500/30 bg-sky-500/10 px-1 rounded">OS</span>}
-                      <span className="text-white/60 text-xs tabular-nums font-semibold">{p.acquisitionPriceLakhs}p</span>
-                      {p.fantasyPoints > 0 && (
-                        <span className="text-green-400 text-xs tabular-nums font-bold ml-1">+{p.fantasyPoints}</span>
-                      )}
-                    </div>
-                  ))}
+              <div
+                key={p.playerId}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-colors ${
+                  isC ? 'border-amber-400/60 bg-amber-400/10' : isVC ? 'border-slate-300/50 bg-white/5' : 'border-white/5 bg-white/[0.03] hover:bg-white/5'
+                }`}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <RoleBadge role={p.role} />
+                    <span className="text-white text-sm font-medium truncate">{p.playerName}</span>
+                  </div>
+                  {p.teamCode && <p className="text-white/30 text-xs mt-0.5">{p.teamCode}</p>}
+                </div>
+                <div className="flex gap-1.5 flex-shrink-0">
+                  <button
+                    onClick={() => setCaptainId(isC ? '' : p.playerId)}
+                    className={`w-8 h-8 rounded-full text-xs font-black transition-colors ${
+                      isC ? 'bg-amber-400 text-black' : 'bg-white/10 text-white/40 hover:bg-white/20'
+                    }`}
+                  >C</button>
+                  <button
+                    onClick={() => setVcId(isVC ? '' : p.playerId)}
+                    className={`w-8 h-8 rounded-full text-xs font-black transition-colors ${
+                      isVC ? 'bg-slate-300 text-black' : 'bg-white/10 text-white/40 hover:bg-white/20'
+                    }`}
+                  >VC</button>
                 </div>
               </div>
             );
           })}
         </div>
-      )}
+
+        <div className="px-5 py-4 border-t border-white/10">
+          <button
+            disabled={!canSave || saving}
+            onClick={() => canSave && onSave(captainId, vcId)}
+            className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-colors"
+          >
+            {saving ? 'Saving…' : 'Confirm Selection'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-function SquadsTab({ members, leagueBudget }: { members: LeagueMember[]; leagueBudget: number }) {
+// ── Squad card ────────────────────────────────────────────────────────────────
+
+function SquadCard({
+  member,
+  leagueBudget,
+  isOwnSquad,
+  leagueId,
+}: {
+  member: LeagueMember;
+  leagueBudget: number;
+  isOwnSquad: boolean;
+  leagueId: string;
+}) {
+  const [expanded, setExpanded]       = useState(false);
+  const [showCaptainModal, setShowCaptainModal] = useState(false);
+  const { mutate: setCaptain, isPending: saving } = useSetCaptain(leagueId);
+
+  const spentPct = leagueBudget > 0 ? (member.totalSpent / leagueBudget) * 100 : 0;
+  const byRole = member.squad.reduce<Record<string, SquadPlayer[]>>((acc, p) => {
+    (acc[p.role] ??= []).push(p);
+    return acc;
+  }, {});
+
+  const hasCaptain = !!member.captainPlayerId;
+
+  return (
+    <>
+      <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+        <button
+          className="w-full flex items-center gap-4 px-5 py-4 text-left"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <Avatar name={member.teamName} size={40} />
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-bold truncate">{member.teamName}</p>
+            <p className="text-white/40 text-xs">{member.username} · {member.squad.length} players</p>
+            <div className="mt-1.5 h-1 bg-white/10 rounded-full w-32 overflow-hidden">
+              <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${spentPct}%` }} />
+            </div>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <p className="text-white font-black text-lg tabular-nums">{member.totalPoints.toLocaleString()}</p>
+            <p className="text-white/30 text-[10px]">pts</p>
+            <p className="text-white/40 text-xs mt-0.5">{member.budgetRemainingLakhs} left</p>
+          </div>
+          <svg className={`w-4 h-4 text-white/30 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {expanded && (
+          <div className="border-t border-white/10 p-4 space-y-4">
+            {/* Captain assignment CTA for own squad */}
+            {isOwnSquad && (
+              <button
+                onClick={() => setShowCaptainModal(true)}
+                className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition-colors ${
+                  hasCaptain
+                    ? 'border-amber-400/30 bg-amber-400/5 text-amber-300'
+                    : 'border-dashed border-white/20 bg-white/[0.02] text-white/40 hover:border-white/40 hover:text-white/70'
+                }`}
+              >
+                <span className="text-sm font-semibold">
+                  {hasCaptain ? '✓ Captain assigned — tap to change' : 'Assign Captain &amp; Vice-Captain'}
+                </span>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            )}
+
+            {(['WK', 'BAT', 'AR', 'BOWL'] as const).map(role => {
+              const group = byRole[role];
+              if (!group?.length) return null;
+              const labels: Record<string, string> = { WK: 'Wicket-keepers', BAT: 'Batters', AR: 'All-rounders', BOWL: 'Bowlers' };
+              return (
+                <div key={role}>
+                  <p className="text-white/30 text-[10px] uppercase tracking-widest mb-2 flex items-center gap-2">
+                    <RoleBadge role={role} />
+                    <span>{labels[role]}</span>
+                  </p>
+                  <div className="space-y-1.5">
+                    {group.map(p => (
+                      <div key={p.playerId} className="flex items-center gap-2">
+                        {/* C / VC badge */}
+                        {p.isCaptain ? (
+                          <span className="w-5 h-5 rounded-full bg-amber-400 flex items-center justify-center text-[9px] font-black text-black flex-shrink-0">C</span>
+                        ) : p.isViceCaptain ? (
+                          <span className="w-5 h-5 rounded-full bg-slate-300 flex items-center justify-center text-[9px] font-black text-black flex-shrink-0">VC</span>
+                        ) : (
+                          <span className="w-5 flex-shrink-0" />
+                        )}
+                        <span className="flex-1 text-white/80 text-sm font-medium truncate">{p.playerName}</span>
+                        {p.teamCode && <span className="text-white/30 text-xs font-mono">{p.teamCode}</span>}
+                        {p.isOverseas && <span className="text-[10px] text-sky-400 border border-sky-500/30 bg-sky-500/10 px-1 rounded">OS</span>}
+                        <span className="text-white/60 text-xs tabular-nums font-semibold">{p.acquisitionPriceLakhs}p</span>
+                        {p.fantasyPoints > 0 && (
+                          <span className={`text-xs tabular-nums font-bold ml-1 ${p.isCaptain ? 'text-amber-400' : p.isViceCaptain ? 'text-slate-300' : 'text-green-400'}`}>
+                            +{p.fantasyPoints}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {showCaptainModal && (
+        <CaptainModal
+          squad={member.squad}
+          currentCaptainId={member.captainPlayerId}
+          currentVcId={member.viceCaptainPlayerId}
+          saving={saving}
+          onClose={() => setShowCaptainModal(false)}
+          onSave={(captainPlayerId, viceCaptainPlayerId) => {
+            setCaptain({ captainPlayerId, viceCaptainPlayerId }, {
+              onSuccess: () => setShowCaptainModal(false),
+            });
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function SquadsTab({
+  members,
+  leagueBudget,
+  internalUserId,
+  leagueId,
+}: {
+  members: LeagueMember[];
+  leagueBudget: number;
+  internalUserId: string | null;
+  leagueId: string;
+}) {
   return (
     <div className="space-y-3">
       {members.map(m => (
-        <SquadCard key={m.id} member={m} leagueBudget={leagueBudget} />
+        <SquadCard
+          key={m.id}
+          member={m}
+          leagueBudget={leagueBudget}
+          isOwnSquad={m.userId === internalUserId}
+          leagueId={leagueId}
+        />
       ))}
     </div>
   );
@@ -461,7 +628,7 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
         ) : (
           <>
             {tab === 'standings' && <StandingsTab members={members} matchesPlayed={matchesPlayed} />}
-            {tab === 'squads' && <SquadsTab members={members} leagueBudget={league.totalBudgetLakhs} />}
+            {tab === 'squads' && <SquadsTab members={members} leagueBudget={league.totalBudgetLakhs} internalUserId={internalUserId} leagueId={league.id} />}
             {tab === 'players' && <PlayersTab members={members} />}
           </>
         )}

@@ -227,19 +227,38 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
     }, {});
 
     const result = members.map(m => {
-      const squad = (squadsByMember[m.id] ?? []).map(p => ({
-        playerId: p.playerId,
-        playerName: p.playerName,
-        role: p.role,
-        teamCode: p.teamCode,
-        isOverseas: p.isOverseas,
-        isUncapped: p.isUncapped,
-        acquisitionPriceLakhs: p.acquisitionPriceLakhs,
-        rosterConfig: p.rosterConfig,
-        fantasyPoints: pointsByPlayerId[p.playerId]?.totalPoints ?? 0,
-      }));
+      // Resolve current captain / VC for this member (latest fromMatch wins)
+      const memberCaptains = (captainsByMember[m.id] ?? [])
+        .slice()
+        .sort((a, b) => b.fromMatch - a.fromMatch);
+      const captainPlayerId    = memberCaptains.find(c => c.role === 'CAPTAIN')?.playerId ?? null;
+      const viceCaptainPlayerId = memberCaptains.find(c => c.role === 'VICE_CAPTAIN')?.playerId ?? null;
 
-      const totalSpent = league.totalBudgetLakhs - m.budgetRemainingLakhs;
+      const squad = (squadsByMember[m.id] ?? []).map(p => {
+        const basePoints    = pointsByPlayerId[p.playerId]?.totalPoints ?? 0;
+        const isCaptain     = p.playerId === captainPlayerId;
+        const isViceCaptain = p.playerId === viceCaptainPlayerId;
+        const fantasyPoints = isCaptain
+          ? Math.round(basePoints * 2)
+          : isViceCaptain
+            ? Math.round(basePoints * 1.5)
+            : basePoints;
+        return {
+          playerId: p.playerId,
+          playerName: p.playerName,
+          role: p.role,
+          teamCode: p.teamCode,
+          isOverseas: p.isOverseas,
+          isUncapped: p.isUncapped,
+          acquisitionPriceLakhs: p.acquisitionPriceLakhs,
+          rosterConfig: p.rosterConfig,
+          fantasyPoints,
+          isCaptain,
+          isViceCaptain,
+        };
+      });
+
+      const totalSpent  = league.totalBudgetLakhs - m.budgetRemainingLakhs;
       const totalPoints = squad.reduce((sum, p) => sum + p.fantasyPoints, 0);
 
       return {
@@ -252,6 +271,8 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
         totalSpent,
         totalPoints,
         isOnline: m.isOnline,
+        captainPlayerId,
+        viceCaptainPlayerId,
         squad: squad.sort((a, b) => {
           const roleOrder = { WK: 0, BAT: 1, AR: 2, BOWL: 3 };
           return (roleOrder[a.role as keyof typeof roleOrder] ?? 9) - (roleOrder[b.role as keyof typeof roleOrder] ?? 9);
@@ -267,6 +288,73 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
     });
   } catch (err) {
     console.error('[leagues/squads]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /api/leagues/:id/captain
+ * Assign (or update) captain and vice-captain for the calling user's squad.
+ * Body: { captainPlayerId: string; viceCaptainPlayerId: string }
+ */
+leaguesRouter.post('/:id/captain', async (req: AuthenticatedRequest, res) => {
+  try {
+    const db = getDb();
+    const leagueId = req.params['id'] as string;
+    const { captainPlayerId, viceCaptainPlayerId } = req.body as {
+      captainPlayerId: string;
+      viceCaptainPlayerId: string;
+    };
+
+    if (!captainPlayerId || !viceCaptainPlayerId) {
+      res.status(400).json({ error: 'captainPlayerId and viceCaptainPlayerId are required' });
+      return;
+    }
+    if (captainPlayerId === viceCaptainPlayerId) {
+      res.status(400).json({ error: 'Captain and vice-captain must be different players' });
+      return;
+    }
+
+    // Find this user's member record in the league
+    const [member] = await db
+      .select()
+      .from(leagueMembers)
+      .where(and(eq(leagueMembers.leagueId, leagueId), eq(leagueMembers.userId, req.userId!)));
+
+    if (!member) {
+      res.status(403).json({ error: 'You are not a member of this league' });
+      return;
+    }
+
+    // Verify both players are in the member's squad
+    const squadPlayerIds = await db
+      .select({ playerId: squadPlayers.playerId })
+      .from(squadPlayers)
+      .where(eq(squadPlayers.memberId, member.id));
+
+    const squadSet = new Set(squadPlayerIds.map(r => r.playerId));
+    if (!squadSet.has(captainPlayerId)) {
+      res.status(400).json({ error: 'Captain player is not in your squad' });
+      return;
+    }
+    if (!squadSet.has(viceCaptainPlayerId)) {
+      res.status(400).json({ error: 'Vice-captain player is not in your squad' });
+      return;
+    }
+
+    // Replace all captain assignments for this member
+    await db.delete(captainAssignments).where(eq(captainAssignments.memberId, member.id));
+    const inserted = await db
+      .insert(captainAssignments)
+      .values([
+        { memberId: member.id, playerId: captainPlayerId,    role: 'CAPTAIN',      fromMatch: 1 },
+        { memberId: member.id, playerId: viceCaptainPlayerId, role: 'VICE_CAPTAIN', fromMatch: 1 },
+      ])
+      .returning();
+
+    res.json({ captainAssignments: inserted });
+  } catch (err) {
+    console.error('[leagues/captain]', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
