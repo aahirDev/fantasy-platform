@@ -630,7 +630,7 @@ leaguesRouter.post('/:id/sync-roster', async (req: AuthenticatedRequest, res) =>
     type RosterTeam   = { id: string; name?: string; players: RosterPlayer[]; captainHistory?: CaptainEntry[] };
     type RosterConfig = { teams: RosterTeam[] };
 
-    const config = await netlifyGet<RosterConfig>('ipl26a:roster_config');
+    const config = await netlifyGet<RosterConfig>('ipl26auction:roster_config');
     if (!config?.teams) {
       res.status(503).json({ error: 'roster_config blob not found or malformed' }); return;
     }
