@@ -6,6 +6,28 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { nanoid } from '../lib/nanoid.js';
 import { AuctionStateManager, getAuction } from '../auction/AuctionStateManager.js';
 
+// ─── Netlify blob helper (for roster sync) ───────────────────────────────────
+const NETLIFY_BASE = 'https://auctionipl2026.netlify.app/api/store';
+
+async function netlifyGet<T>(key: string): Promise<T | null> {
+  const url = `${NETLIFY_BASE}?action=get&key=${encodeURIComponent(key)}`;
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Blob GET ${key} → ${res.status}`);
+  const json = await res.json() as { data?: T };
+  return json.data ?? null;
+}
+
+// M11C/roster name aliases → our DB player name
+const PLAYER_ALIASES: Record<string, string> = {
+  'Lungi Ngidi':          'Lungisani Ngidi',
+  'AM Ghazanfar':         'Allah Ghazanfar',
+  'Vaibhav Sooryavanshi': 'Vaibhav Suryavanshi',
+  'Ryan Rickelton':       'Ryan Rickleton',
+  'Digvesh Singh Rathi':  'Digvesh Singh',
+  'Philip Salt':          'Phil Salt',
+};
+
 export const leaguesRouter: RouterType = Router();
 
 leaguesRouter.get('/', async (req: AuthenticatedRequest, res) => {
@@ -499,5 +521,189 @@ leaguesRouter.get('/:id/members/:memberId/breakdown', async (req, res) => {
   } catch (err) {
     console.error('[leagues/breakdown]', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/leagues/:id/transfers
+ * Returns a timeline of player transfer events (IN/OUT) derived from
+ * squad_players.rosterConfig (fromMatch / toMatch fields).
+ */
+leaguesRouter.get('/:id/transfers', async (req, res) => {
+  try {
+    const db = getDb();
+    const leagueId = String(req.params['id'] ?? '');
+
+    const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId));
+    if (!league) { res.status(404).json({ error: 'League not found' }); return; }
+
+    const rows = await db
+      .select({
+        memberId: leagueMembers.id,
+        teamName: leagueMembers.teamName,
+        playerId: players.id,
+        playerName: players.name,
+        role: players.role,
+        teamCode: players.teamCode,
+        rosterConfig: squadPlayers.rosterConfig,
+      })
+      .from(squadPlayers)
+      .innerJoin(players, eq(squadPlayers.playerId, players.id))
+      .innerJoin(leagueMembers, eq(squadPlayers.memberId, leagueMembers.id))
+      .where(eq(leagueMembers.leagueId, leagueId));
+
+    type TransferEvent = {
+      matchNumber: number;
+      type: 'IN' | 'OUT';
+      memberId: string;
+      teamName: string;
+      playerId: string;
+      playerName: string;
+      role: string | null;
+      teamCode: string | null;
+    };
+
+    const events: TransferEvent[] = [];
+    for (const row of rows) {
+      const rc = row.rosterConfig as { fromMatch?: number; toMatch?: number | null } | null;
+      const fromMatch = rc?.fromMatch ?? 1;
+      const toMatch   = rc?.toMatch ?? null;
+
+      // Transferred IN: player wasn't there from Match 1
+      if (fromMatch > 1) {
+        events.push({
+          matchNumber: fromMatch,
+          type: 'IN',
+          memberId: row.memberId,
+          teamName: row.teamName,
+          playerId: row.playerId,
+          playerName: row.playerName,
+          role: row.role,
+          teamCode: row.teamCode,
+        });
+      }
+
+      // Transferred OUT: toMatch > 0 (0 means never active; null means still active)
+      if (toMatch !== null && toMatch > 0) {
+        events.push({
+          matchNumber: toMatch + 1, // first match they're NOT in
+          type: 'OUT',
+          memberId: row.memberId,
+          teamName: row.teamName,
+          playerId: row.playerId,
+          playerName: row.playerName,
+          role: row.role,
+          teamCode: row.teamCode,
+        });
+      }
+    }
+
+    // Sort: ascending match number, OUTs before INs at the same match
+    events.sort((a, b) => a.matchNumber - b.matchNumber || (a.type === 'OUT' ? -1 : 1));
+
+    res.json({ transfers: events });
+  } catch (err) {
+    console.error('[leagues/transfers]', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /api/leagues/:id/sync-roster
+ * Commissioner-only: pulls the latest ipl26a:roster_config blob from Netlify
+ * and updates squad_players.rosterConfig + captainAssignments in the DB.
+ */
+leaguesRouter.post('/:id/sync-roster', async (req: AuthenticatedRequest, res) => {
+  try {
+    const db = getDb();
+    const leagueId = String(req.params['id'] ?? '');
+
+    const [league] = await db.select().from(leagues).where(eq(leagues.id, leagueId));
+    if (!league) { res.status(404).json({ error: 'League not found' }); return; }
+    if (league.commissionerId !== req.internalUserId) {
+      res.status(403).json({ error: 'Only the commissioner can sync the roster' }); return;
+    }
+
+    // Fetch roster_config blob
+    type RosterPlayer = { name: string; fromMatch: number; toMatch: number | null; role?: string };
+    type CaptainEntry = { captain: string; vc: string; fromMatch: number };
+    type RosterTeam   = { id: string; name?: string; players: RosterPlayer[]; captainHistory?: CaptainEntry[] };
+    type RosterConfig = { teams: RosterTeam[] };
+
+    const config = await netlifyGet<RosterConfig>('ipl26a:roster_config');
+    if (!config?.teams) {
+      res.status(503).json({ error: 'roster_config blob not found or malformed' }); return;
+    }
+
+    // Load all DB players for name resolution
+    const allPlayers = await db.select({ id: players.id, name: players.name, aliases: players.aliases }).from(players);
+    const playerNameMap = new Map<string, string>(); // normalised name → player.id
+    for (const p of allPlayers) {
+      playerNameMap.set(p.name.toLowerCase(), p.id);
+      for (const a of p.aliases) playerNameMap.set(a.toLowerCase(), p.id);
+    }
+
+    function resolvePlayerId(name: string): string | undefined {
+      const aliased = PLAYER_ALIASES[name] ?? name;
+      return playerNameMap.get(aliased.toLowerCase()) ?? playerNameMap.get(name.toLowerCase());
+    }
+
+    // Load all members for this league (keyed by teamId/username)
+    const leagueMembers2 = await db
+      .select({ id: leagueMembers.id, username: users.username })
+      .from(leagueMembers)
+      .innerJoin(users, eq(leagueMembers.userId, users.id))
+      .where(eq(leagueMembers.leagueId, leagueId));
+
+    const memberByUsername = new Map(leagueMembers2.map(m => [m.username, m.id]));
+
+    let rosterUpdates = 0;
+    let captainUpdates = 0;
+
+    for (const team of config.teams) {
+      const memberId = memberByUsername.get(team.id);
+      if (!memberId) continue;
+
+      // Update rosterConfig for each squad player
+      for (const p of team.players) {
+        const playerId = resolvePlayerId(p.name);
+        if (!playerId) continue;
+
+        const rosterConfig = { fromMatch: p.fromMatch, toMatch: p.toMatch ?? null };
+
+        await db
+          .update(squadPlayers)
+          .set({ rosterConfig })
+          .where(and(eq(squadPlayers.memberId, memberId), eq(squadPlayers.playerId, playerId)));
+
+        rosterUpdates++;
+      }
+
+      // Rebuild captainAssignments from captainHistory
+      if (team.captainHistory?.length) {
+        await db.delete(captainAssignments).where(eq(captainAssignments.memberId, memberId));
+
+        const rows: Array<{ memberId: string; playerId: string; role: 'CAPTAIN' | 'VICE_CAPTAIN'; fromMatch: number }> = [];
+        for (const entry of team.captainHistory) {
+          const cId = resolvePlayerId(entry.captain);
+          const vId = resolvePlayerId(entry.vc);
+          if (cId) rows.push({ memberId, playerId: cId,  role: 'CAPTAIN',      fromMatch: entry.fromMatch });
+          if (vId) rows.push({ memberId, playerId: vId,  role: 'VICE_CAPTAIN', fromMatch: entry.fromMatch });
+        }
+        if (rows.length) {
+          await db.insert(captainAssignments).values(rows);
+          captainUpdates += rows.length;
+        }
+      }
+    }
+
+    res.json({
+      rosterUpdates,
+      captainUpdates,
+      message: `Updated ${rosterUpdates} player windows and ${captainUpdates} captain assignments`,
+    });
+  } catch (err) {
+    console.error('[leagues/sync-roster]', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' });
   }
 });

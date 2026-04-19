@@ -3,9 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../lib/api';
 import { useAuthStore } from '../store/auth';
-import { useLeagueSquads, useStartAuction, useSyncMatches, useSetCaptain, useLeagueMemberBreakdown } from '../hooks/useLeagueSquads';
+import { useLeagueSquads, useStartAuction, useSyncMatches, useSyncRoster, useSetCaptain, useLeagueMemberBreakdown, useLeagueTransfers } from '../hooks/useLeagueSquads';
 import type { League } from '../hooks/useLeagues';
-import type { LeagueMember, SquadPlayer, SyncResult, MemberBreakdownResponse, MatchBreakdown } from '../hooks/useLeagueSquads';
+import type { LeagueMember, SquadPlayer, M11cSyncResult, MemberBreakdownResponse, MatchBreakdown, TransferEvent } from '../hooks/useLeagueSquads';
 
 // ── Role badge ────────────────────────────────────────────────────────────────
 
@@ -154,7 +154,7 @@ function LobbyView({ league, internalUserId }: { league: League; internalUserId:
 //  HUB VIEW (post-auction tabs)
 // ══════════════════════════════════════════════════════════════════════════════
 
-type HubTab = 'standings' | 'squads' | 'players';
+type HubTab = 'standings' | 'squads' | 'players' | 'transfers';
 
 // ── Standings tab ─────────────────────────────────────────────────────────────
 
@@ -672,13 +672,91 @@ function PlayersTab({ members }: { members: LeagueMember[] }) {
   );
 }
 
+// ── Transfers tab ─────────────────────────────────────────────────────────────
+
+function TransfersTab({ leagueId }: { leagueId: string }) {
+  const { data, isLoading } = useLeagueTransfers(leagueId);
+  const transfers = data?.transfers ?? [];
+
+  if (isLoading) {
+    return <div className="text-center text-white/30 py-16 text-sm">Loading transfers…</div>;
+  }
+
+  if (transfers.length === 0) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-white/30 text-sm">No transfers yet</p>
+        <p className="text-white/20 text-xs mt-1">Player windows will appear here once roster config is synced</p>
+      </div>
+    );
+  }
+
+  // Group by match number
+  const byMatch = new Map<number, TransferEvent[]>();
+  for (const t of transfers) {
+    (byMatch.get(t.matchNumber) ?? byMatch.set(t.matchNumber, []).get(t.matchNumber)!).push(t);
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-white/30 text-xs">{transfers.length} transfer{transfers.length !== 1 ? 's' : ''} across the season</p>
+      {[...byMatch.entries()].map(([matchNum, events]) => (
+        <div key={matchNum} className="space-y-2">
+          {/* Match header */}
+          <div className="flex items-center gap-3">
+            <span className="text-white/20 font-mono text-xs">M{matchNum}</span>
+            <div className="flex-1 h-px bg-white/8" />
+          </div>
+          {/* Events */}
+          {events.map((ev, i) => (
+            <div
+              key={`${ev.playerId}-${ev.type}-${i}`}
+              className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${
+                ev.type === 'IN'
+                  ? 'bg-green-500/5 border-green-500/20'
+                  : 'bg-red-500/5 border-red-500/20'
+              }`}
+            >
+              {/* IN / OUT badge */}
+              <span className={`text-[10px] font-black px-2 py-0.5 rounded-full flex-shrink-0 ${
+                ev.type === 'IN'
+                  ? 'bg-green-500/20 text-green-400'
+                  : 'bg-red-500/20 text-red-400'
+              }`}>
+                {ev.type === 'IN' ? '▲ IN' : '▼ OUT'}
+              </span>
+              {/* Player info */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  {ev.role && <RoleBadge role={ev.role} />}
+                  <span className="text-white text-sm font-medium truncate">{ev.playerName}</span>
+                </div>
+                <p className="text-white/30 text-xs mt-0.5">{ev.teamCode ?? '—'}</p>
+              </div>
+              {/* Team */}
+              <div className="text-right flex-shrink-0">
+                <p className="text-white/60 text-xs font-semibold">{ev.teamName}</p>
+                <p className="text-white/25 text-[10px]">
+                  {ev.type === 'IN' ? `from M${ev.matchNumber}` : `until M${ev.matchNumber - 1}`}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Hub wrapper ───────────────────────────────────────────────────────────────
 
 function HubView({ league, internalUserId }: { league: League; internalUserId: string | null }) {
   const [tab, setTab] = useState<HubTab>('standings');
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [rosterMsg, setRosterMsg] = useState<string | null>(null);
   const { data, isLoading } = useLeagueSquads(league.id);
   const { mutate: syncMatches, isPending: syncing } = useSyncMatches(league.id);
+  const { mutate: syncRoster, isPending: syncingRoster } = useSyncRoster(league.id);
 
   const members = data?.members ?? [];
   const matchesPlayed = data?.matchesPlayed ?? 0;
@@ -688,15 +766,25 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
   function handleSync() {
     setSyncMsg(null);
     syncMatches(undefined, {
-      onSuccess: (result: SyncResult) => {
-        if (result.synced.length > 0) {
-          setSyncMsg(`✓ Synced match${result.synced.length !== 1 ? 'es' : ''} ${result.synced.join(', ')}`);
-        } else {
-          setSyncMsg(result.message);
-        }
+      onSuccess: (result: M11cSyncResult) => {
+        setSyncMsg(result.matches > 0
+          ? `✓ M11C: ${result.matches} matches · ${result.players} players (${result.matched}/${result.total} M11C players matched)`
+          : result.message);
       },
       onError: (err: unknown) => {
         setSyncMsg(`✗ ${err instanceof Error ? err.message : 'Sync failed'}`);
+      },
+    });
+  }
+
+  function handleSyncRoster() {
+    setRosterMsg(null);
+    syncRoster(undefined, {
+      onSuccess: (result) => {
+        setRosterMsg(`✓ Roster synced — ${result.rosterUpdates} player windows, ${result.captainUpdates} captain assignments updated`);
+      },
+      onError: (err: unknown) => {
+        setRosterMsg(`✗ ${err instanceof Error ? err.message : 'Roster sync failed'}`);
       },
     });
   }
@@ -719,12 +807,30 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
             </p>
           </div>
           {isCommissioner && (
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              <button
+                onClick={handleSyncRoster}
+                disabled={syncingRoster}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors"
+                title="Pull latest transfers from Netlify roster config"
+              >
+                {syncingRoster ? (
+                  <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                  </svg>
+                )}
+                {syncingRoster ? 'Syncing…' : 'Sync Roster'}
+              </button>
               <button
                 onClick={handleSync}
                 disabled={syncing}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors"
-                title="Fetch latest completed matches from CricAPI and compute fantasy points"
+                title="Pull latest M11C fantasy points from Netlify cache"
               >
                 {syncing ? (
                   <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -744,11 +850,18 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
             </div>
           )}
         </div>
-        {syncMsg && (
-          <div className="max-w-2xl mx-auto mt-2">
-            <p className={`text-xs px-3 py-1.5 rounded-lg ${syncMsg.startsWith('✓') ? 'bg-green-500/10 text-green-400 border border-green-500/20' : syncMsg.startsWith('✗') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-white/50 border border-white/10'}`}>
-              {syncMsg}
-            </p>
+        {(syncMsg || rosterMsg) && (
+          <div className="max-w-2xl mx-auto mt-2 space-y-1">
+            {syncMsg && (
+              <p className={`text-xs px-3 py-1.5 rounded-lg ${syncMsg.startsWith('✓') ? 'bg-green-500/10 text-green-400 border border-green-500/20' : syncMsg.startsWith('✗') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-white/50 border border-white/10'}`}>
+                {syncMsg}
+              </p>
+            )}
+            {rosterMsg && (
+              <p className={`text-xs px-3 py-1.5 rounded-lg ${rosterMsg.startsWith('✓') ? 'bg-green-500/10 text-green-400 border border-green-500/20' : rosterMsg.startsWith('✗') ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-white/50 border border-white/10'}`}>
+                {rosterMsg}
+              </p>
+            )}
           </div>
         )}
       </header>
@@ -758,8 +871,9 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
         <div className="max-w-2xl mx-auto flex">
           {([
             { id: 'standings', label: 'Standings' },
-            { id: 'squads', label: 'Squads' },
-            { id: 'players', label: 'Players' },
+            { id: 'squads',    label: 'Squads' },
+            { id: 'transfers', label: 'Transfers' },
+            { id: 'players',   label: 'Players' },
           ] as { id: HubTab; label: string }[]).map(t => (
             <button
               key={t.id}
@@ -784,6 +898,7 @@ function HubView({ league, internalUserId }: { league: League; internalUserId: s
           <>
             {tab === 'standings' && <StandingsTab members={members} matchesPlayed={matchesPlayed} leagueId={league.id} />}
             {tab === 'squads' && <SquadsTab members={members} leagueBudget={league.totalBudgetLakhs} internalUserId={internalUserId} leagueId={league.id} />}
+            {tab === 'transfers' && <TransfersTab leagueId={league.id} />}
             {tab === 'players' && <PlayersTab members={members} />}
           </>
         )}

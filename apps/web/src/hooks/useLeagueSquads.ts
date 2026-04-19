@@ -72,17 +72,40 @@ export function useStartAuction(leagueId: string | undefined) {
   });
 }
 
+export interface M11cSyncResult {
+  synced: number[];
+  matches: number;
+  players: number;
+  matched: number;
+  total: number;
+  message: string;
+}
+
 export function useSyncMatches(leagueId: string | undefined) {
   const qc = useQueryClient();
-  return useMutation<SyncResult>({
+  return useMutation<M11cSyncResult>({
     mutationFn: () =>
-      apiFetch('/api/matches/sync', {
+      apiFetch('/api/matches/sync-m11c', {
         method: 'POST',
         body: JSON.stringify({ leagueId }),
         headers: { 'Content-Type': 'application/json' },
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['league-squads', leagueId] });
+      void qc.invalidateQueries({ queryKey: ['league-breakdown'] });
+      void qc.invalidateQueries({ queryKey: ['league-transfers', leagueId] });
+    },
+  });
+}
+
+export function useSyncRoster(leagueId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation<{ rosterUpdates: number; captainUpdates: number; message: string }>({
+    mutationFn: () =>
+      apiFetch(`/api/leagues/${leagueId}/sync-roster`, { method: 'POST' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['league-squads', leagueId] });
+      void qc.invalidateQueries({ queryKey: ['league-transfers', leagueId] });
     },
   });
 }
@@ -148,5 +171,31 @@ export function useLeagueMembers(leagueId: string | undefined) {
     },
     enabled: !!leagueId,
     staleTime: 30_000,
+  });
+}
+
+// ── Transfers ─────────────────────────────────────────────────────────────────
+
+export interface TransferEvent {
+  matchNumber: number;
+  type: 'IN' | 'OUT';
+  memberId: string;
+  teamName: string;
+  playerId: string;
+  playerName: string;
+  role: string | null;
+  teamCode: string | null;
+}
+
+export interface TransfersResponse {
+  transfers: TransferEvent[];
+}
+
+export function useLeagueTransfers(leagueId: string | undefined) {
+  return useQuery<TransfersResponse>({
+    queryKey: ['league-transfers', leagueId],
+    queryFn: () => apiFetch(`/api/leagues/${leagueId}/transfers`),
+    enabled: !!leagueId,
+    staleTime: 60_000,
   });
 }
