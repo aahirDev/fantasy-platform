@@ -284,7 +284,7 @@ leaguesRouter.get('/:id/squads', async (req, res) => {
           const mult  = p.playerId === captM?.playerId ? 2.0
                       : p.playerId === vcM?.playerId   ? 1.5
                       : 1.0;
-          playerTotal += Math.round(pts * mult);
+          playerTotal += pts * mult;
         }
 
         return {
@@ -502,7 +502,7 @@ leaguesRouter.get('/:id/members/:memberId/breakdown', async (req, res) => {
           const isCaptain     = p.playerId === captainPlayerId;
           const isViceCaptain = p.playerId === vcPlayerId;
           const multiplier    = isCaptain ? 2.0 : isViceCaptain ? 1.5 : 1.0;
-          const fantasyPoints = Math.round(basePoints * multiplier);
+          const fantasyPoints = basePoints * multiplier;
           return { playerId: p.playerId, playerName: p.playerName, role: p.role, teamCode: p.teamCode, basePoints, multiplier, fantasyPoints, isCaptain, isViceCaptain };
         })
         .sort((a, b) => b.fantasyPoints - a.fantasyPoints);
@@ -664,17 +664,36 @@ leaguesRouter.post('/:id/sync-roster', async (req: AuthenticatedRequest, res) =>
       const memberId = memberByUsername.get(team.id);
       if (!memberId) continue;
 
-      // Update rosterConfig for each squad player
+      // Load existing squad player IDs for this member (to detect net-new transfers)
+      const existingRows = await db
+        .select({ playerId: squadPlayers.playerId })
+        .from(squadPlayers)
+        .where(eq(squadPlayers.memberId, memberId));
+      const existingPlayerIds = new Set(existingRows.map(r => r.playerId));
+
+      // Upsert rosterConfig for each player in the blob
       for (const p of team.players) {
         const playerId = resolvePlayerId(p.name);
-        if (!playerId) continue;
+        if (!playerId) { console.warn(`[sync-roster] no DB player for "${p.name}" (team ${team.id})`); continue; }
 
         const rosterConfig = { fromMatch: p.fromMatch, toMatch: p.toMatch ?? null };
 
-        await db
-          .update(squadPlayers)
-          .set({ rosterConfig })
-          .where(and(eq(squadPlayers.memberId, memberId), eq(squadPlayers.playerId, playerId)));
+        if (existingPlayerIds.has(playerId)) {
+          // Player already in squad — just update their roster window
+          await db
+            .update(squadPlayers)
+            .set({ rosterConfig })
+            .where(and(eq(squadPlayers.memberId, memberId), eq(squadPlayers.playerId, playerId)));
+        } else {
+          // New transfer player not yet in squad — insert them
+          await db.insert(squadPlayers).values({
+            memberId,
+            playerId,
+            acquisitionPriceLakhs: 0,
+            rosterConfig,
+          });
+          existingPlayerIds.add(playerId); // prevent double-insert if blob has duplicates
+        }
 
         rosterUpdates++;
       }

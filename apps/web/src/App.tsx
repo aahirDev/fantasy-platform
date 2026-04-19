@@ -7,6 +7,7 @@ import SignupPage from './pages/Signup';
 import AuthCallbackPage from './pages/AuthCallback';
 import LeaguePage from './pages/League';
 import AuctionRoomPage from './pages/AuctionRoom';
+import TeamPage from './pages/TeamPage';
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/" element={<ProtectedRoute><HomePage /></ProtectedRoute>} />
         <Route path="/league/:id" element={<ProtectedRoute><LeaguePage /></ProtectedRoute>} />
         <Route path="/league/:id/auction" element={<ProtectedRoute><AuctionRoomPage /></ProtectedRoute>} />
+        <Route path="/league/:id/team/:memberId" element={<ProtectedRoute><TeamPage /></ProtectedRoute>} />
       </Routes>
     </AuthProvider>
   );
